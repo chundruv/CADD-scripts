@@ -1,16 +1,19 @@
 # Snakemake SLURM profile configuration
 # This profile enables SLURM job submission for batch processing
 
-# Use SLURM executor
-executor: slurm
+# Cluster submission command
+cluster: "sbatch -A {resources.slurm_account} -p {resources.slurm_partition} -c {threads} --mem={resources.mem_mb}M -t {resources.runtime} {resources.slurm_extra}"
+
+# Job status checking
+cluster-status: "profiles/slurm/slurm-status.py"
 
 # Default resources for all jobs (can be overridden per-rule)
 default-resources:
-  slurm_partition: "{resources.slurm_partition}"
-  slurm_account: "{resources.slurm_account}"
-  runtime: "{resources.runtime}"
-  mem_mb: "{resources.mem_mb}"
-  cpus_per_task: "{threads}"
+  slurm_partition: "normal"
+  slurm_account: "default"
+  runtime: 120
+  mem_mb: 8000
+  slurm_extra: ""
 
 # Job submission settings
 jobs: 100  # Max concurrent jobs

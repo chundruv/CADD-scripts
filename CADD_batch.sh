@@ -208,12 +208,10 @@ then
     echo "  Partition: $SLURM_PARTITION"
     echo "  Max jobs: $MAX_JOBS"
 
-    # Use SLURM executor with resources
-    command="$command --executor slurm \
+    # Use SLURM cluster submission with profile
+    command="$command --profile $CADD/profiles/slurm \
         --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
-        --jobs $MAX_JOBS \
-        --retries 3 \
-        --latency-wait 60"
+        --jobs $MAX_JOBS"
 fi
 
 echo "Running snakemake pipeline:"
