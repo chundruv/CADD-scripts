@@ -4,9 +4,6 @@
 # Cluster submission command
 cluster: "sbatch -A {resources.slurm_account} -p {resources.slurm_partition} -c {threads} --mem={resources.mem_mb}M -t {resources.runtime} {resources.slurm_extra}"
 
-# Job status checking
-cluster-status: "profiles/slurm/slurm-status.py"
-
 # Default resources for all jobs (can be overridden per-rule)
 default-resources:
   slurm_partition: "normal"

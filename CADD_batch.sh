@@ -208,10 +208,12 @@ then
     echo "  Partition: $SLURM_PARTITION"
     echo "  Max jobs: $MAX_JOBS"
 
-    # Use SLURM cluster submission with profile
-    command="$command --profile $CADD/profiles/slurm \
+    # Use SLURM cluster submission directly
+    command="$command --cluster 'sbatch -A $SLURM_ACCOUNT -p $SLURM_PARTITION -c {threads} --mem={resources.mem_mb}M -t {resources.runtime}' \
         --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
-        --jobs $MAX_JOBS"
+        --jobs $MAX_JOBS \
+        --latency-wait 60 \
+        --retries 3"
 fi
 
 echo "Running snakemake pipeline:"
