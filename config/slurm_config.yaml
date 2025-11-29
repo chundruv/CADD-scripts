@@ -1,0 +1,55 @@
+# SLURM Configuration for CADD batch processing
+# Copy this file and customize for your cluster
+
+# SLURM account and partition settings
+slurm_account: "your_account_here"  # Replace with your SLURM account (-A flag)
+slurm_partition: "normal"  # Replace with your partition/queue (-q flag)
+
+# Optional: GPU partition for ESM and MMSplice rules
+slurm_gpu_partition: "gpu"  # Partition with GPU access
+
+# Default resource limits (can be overridden per rule in Snakefile)
+default_resources:
+  mem_mb: 8000      # Default memory in MB
+  runtime: 120      # Default runtime in minutes
+  cpus: 1           # Default CPU cores
+
+# Rule-specific resource overrides
+rule_resources:
+  annotation_vep:
+    mem_mb: 8000
+    runtime: 180
+    cpus: 2
+
+  annotate_esm:
+    mem_mb: 16000
+    runtime: 360
+    cpus: 4
+    partition: "gpu"  # Override partition for GPU jobs
+    extra: "--gres=gpu:1"
+
+  annotate_mmsplice:
+    mem_mb: 12000
+    runtime: 240
+    cpus: 2
+    partition: "gpu"
+    extra: "--gres=gpu:1"
+
+  annotate_regseq:
+    mem_mb: 8000
+    runtime: 180
+    cpus: 2
+
+  score:
+    mem_mb: 8000
+    runtime: 120
+    cpus: 1
+
+# Batch processing settings
+BatchMode: true      # Enable batch processing
+BatchSize: 1000      # Number of variants per batch
+
+# SLURM job submission settings
+max_jobs: 100                    # Maximum concurrent jobs
+max_status_checks_per_second: 1  # Rate limit for status checks
+latency_wait: 60                 # Seconds to wait for output files

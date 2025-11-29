@@ -1,0 +1,34 @@
+# Snakemake SLURM profile configuration
+# This profile enables SLURM job submission for batch processing
+
+# Use SLURM executor
+executor: slurm
+
+# Default resources for all jobs (can be overridden per-rule)
+default-resources:
+  slurm_partition: "{resources.slurm_partition}"
+  slurm_account: "{resources.slurm_account}"
+  runtime: "{resources.runtime}"
+  mem_mb: "{resources.mem_mb}"
+  cpus_per_task: "{threads}"
+
+# Job submission settings
+jobs: 100  # Max concurrent jobs
+max-jobs-per-second: 10
+max-status-checks-per-second: 1
+
+# Retry failed jobs
+retries: 3
+restart-times: 0
+
+# Keep going if a job fails (useful for batch processing)
+keep-going: False
+
+# Latency wait (seconds to wait for output files)
+latency-wait: 60
+
+# Rerun incomplete jobs
+rerun-incomplete: True
+
+# Print shell commands
+printshellcmds: True
