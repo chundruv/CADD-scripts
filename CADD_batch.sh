@@ -189,18 +189,6 @@ else
 fi
 
 # Build snakemake command
-command="snakemake $TMP_OUTFILE \
-    --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
-    --cores $CORES --configfile $CONFIG \
-    --snakefile $SNAKEFILE $VERBOSE"
-
-# Add batch mode config
-if [ "$BATCH_MODE" = true ]
-then
-    command="$command --config BatchMode=True BatchSize=$BATCH_SIZE"
-fi
-
-# Add SLURM profile if requested
 if [ "$USE_SLURM" = true ]
 then
     echo "Using SLURM for job submission"
@@ -208,18 +196,50 @@ then
     echo "  Partition: $SLURM_PARTITION"
     echo "  Max jobs: $MAX_JOBS"
 
-    # Use SLURM cluster submission directly
-    command="$command --cluster \"sbatch -A $SLURM_ACCOUNT -p $SLURM_PARTITION -c {threads} --mem={resources.mem_mb}M -t {resources.runtime}\" \
-        --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
-        --jobs $MAX_JOBS \
-        --latency-wait 60 \
-        --retries 3"
+    # Build SLURM-specific command
+    CLUSTER_CMD="sbatch -A $SLURM_ACCOUNT -p $SLURM_PARTITION -c {threads} --mem={resources.mem_mb}M -t {resources.runtime}"
+
+    if [ "$BATCH_MODE" = true ]
+    then
+        echo "Running in BATCH MODE with $BATCH_SIZE variants per batch"
+        snakemake $TMP_OUTFILE \
+            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --cores $CORES --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE \
+            --config BatchMode=True BatchSize=$BATCH_SIZE \
+            --cluster "$CLUSTER_CMD" \
+            --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
+            --jobs $MAX_JOBS \
+            --latency-wait 60 \
+            --retries 3
+    else
+        snakemake $TMP_OUTFILE \
+            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --cores $CORES --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE \
+            --cluster "$CLUSTER_CMD" \
+            --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
+            --jobs $MAX_JOBS \
+            --latency-wait 60 \
+            --retries 3
+    fi
+else
+    # Non-SLURM command
+    if [ "$BATCH_MODE" = true ]
+    then
+        echo "Running in BATCH MODE with $BATCH_SIZE variants per batch"
+        snakemake $TMP_OUTFILE \
+            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --cores $CORES --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE \
+            --config BatchMode=True BatchSize=$BATCH_SIZE
+    else
+        snakemake $TMP_OUTFILE \
+            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --cores $CORES --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE
+    fi
 fi
-
-echo "Running snakemake pipeline:"
-echo -e $command
-
-eval $command
 
 mv $TMP_OUTFILE $OUTFILE
 rm $TMP_INFILE # is in temp folder, should not be necessary
