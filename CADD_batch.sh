@@ -209,7 +209,7 @@ then
     echo "  Max jobs: $MAX_JOBS"
 
     # Use SLURM cluster submission directly
-    command="$command --cluster 'sbatch -A $SLURM_ACCOUNT -p $SLURM_PARTITION -c {threads} --mem={resources.mem_mb}M -t {resources.runtime}' \
+    command="$command --cluster \"sbatch -A $SLURM_ACCOUNT -p $SLURM_PARTITION -c {threads} --mem={resources.mem_mb}M -t {resources.runtime}\" \
         --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
         --jobs $MAX_JOBS \
         --latency-wait 60 \
