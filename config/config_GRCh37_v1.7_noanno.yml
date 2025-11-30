@@ -19,6 +19,13 @@ EnsemblDB: 110
 
 # ESM
 ESMpath: data/annotations/GRCh37_v1.7/esm
+ESMmodels:
+  - esm1v_t33_650M_UR90S_1
+  - esm1v_t33_650M_UR90S_2
+  - esm1v_t33_650M_UR90S_3
+  - esm1v_t33_650M_UR90S_4
+  - esm1v_t33_650M_UR90S_5
+ESMbatchsize: 1
 
 # RegSeq
 REGSEQpath: data/annotations/GRCh37_v1.7/regseq
