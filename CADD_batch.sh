@@ -1,6 +1,6 @@
 #!/bin/bash
 
-usage="$(basename "$0") [-o <outfile>] [-g <genomebuild>] [-v <caddversion>] [-a] <infile>  -- CADD version 1.7 with SLURM batch processing
+usage="$(basename "$0") [-o <outfile>] [-g <genomebuild>] [-v <caddversion>] [-a] <infile>  -- CADD version 1.7 with SLURM batch processing (Snakemake 7 Compatible)
 
 where:
     -h  show this help text
@@ -172,11 +172,13 @@ TMP_OUTFILE=$TMP_FOLDER/$NAME.tsv.gz
 cp $INFILE $TMP_INFILE
 
 # setup bindings of singularity args
+# MODIFIED FOR SNAKEMAKE 7: Uses --use-singularity syntax instead of --sdm/apptainer
 if [ "$CONDAONLY" = 'true' ]
 then
     SIGNULARITYARGS=""
 else
-    SIGNULARITYARGS="apptainer --apptainer-prefix $CADD/envs/apptainer --singularity-args \"--bind ${TMP_FOLDER} ${SIGNULARITYARGS}\""
+    # Note: Snakemake 7 uses --singularity-prefix and --singularity-args
+    SIGNULARITYARGS="--use-singularity --singularity-prefix $CADD/envs/apptainer --singularity-args \"--bind ${TMP_FOLDER} ${SIGNULARITYARGS}\""
 fi
 
 # Select Snakefile based on batch mode
@@ -188,47 +190,50 @@ else
     SNAKEFILE=$CADD/Snakefile
 fi
 
-# Build snakemake command
+# Define the simplified CLUSTER_COMMAND.
+# Snakemake now substitutes the values defined in cluster_config.yaml.
+CLUSTER_COMMAND="sbatch -A {resources.A} -p {resources.p} --time={resources.time} --mem={resources.mem}M --parsable"
+
 if [ "$USE_SLURM" = true ]
 then
-    echo "Using SLURM for job submission"
+    echo "Using SLURM for job submission (Snakemake 7 Legacy Mode with --cluster-config)"
     echo "  Account: $SLURM_ACCOUNT"
     echo "  Partition: $SLURM_PARTITION"
     echo "  Max jobs: $MAX_JOBS"
 
+    # Common Snakemake command options
+    SNAKE_COMMON_ARGS="$TMP_OUTFILE \
+        --use-conda --conda-prefix $CADD/envs/conda \
+        $SIGNULARITYARGS \
+        --cluster-config cluster_config.yaml \
+        --cluster \"$CLUSTER_COMMAND\" \
+        --jobs $MAX_JOBS \
+        --configfile $CONFIG \
+        --snakefile $SNAKEFILE $VERBOSE \
+        --config SLURM_ACCOUNT=$SLURM_ACCOUNT SLURM_PARTITION=$SLURM_PARTITION \
+        --latency-wait 60 \
+        --retries 3"
+
     if [ "$BATCH_MODE" = true ]
     then
-        eval snakemake $TMP_OUTFILE \
-            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
-            --executor slurm --jobs $MAX_JOBS \
-            --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION mem_mb=8000 runtime=120 \
-            --configfile $CONFIG \
-            --snakefile $SNAKEFILE $VERBOSE \
-            --config BatchMode=True BatchSize=$BATCH_SIZE \
-            --latency-wait 60 \
-            --retries 3
+        eval snakemake $SNAKE_COMMON_ARGS --config BatchMode=True BatchSize=$BATCH_SIZE
     else
-        eval snakemake $TMP_OUTFILE \
-            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
-            --executor slurm --jobs $MAX_JOBS \
-            --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION mem_mb=8000 runtime=120 \
-            --configfile $CONFIG \
-            --snakefile $SNAKEFILE $VERBOSE \
-            --latency-wait 60 \
-            --retries 3
+        eval snakemake $SNAKE_COMMON_ARGS
     fi
 else
     # Non-SLURM command (local execution)
     if [ "$BATCH_MODE" = true ]
     then
         eval snakemake $TMP_OUTFILE \
-            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --use-conda --conda-prefix $CADD/envs/conda \
+            $SIGNULARITYARGS \
             --cores $CORES --configfile $CONFIG \
             --snakefile $SNAKEFILE $VERBOSE \
             --config BatchMode=True BatchSize=$BATCH_SIZE
     else
         eval snakemake $TMP_OUTFILE \
-            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --use-conda --conda-prefix $CADD/envs/conda \
+            $SIGNULARITYARGS \
             --cores $CORES --configfile $CONFIG \
             --snakefile $SNAKEFILE $VERBOSE
     fi

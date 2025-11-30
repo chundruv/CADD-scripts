@@ -1,15 +1,10 @@
 """
 Batch processing version of CADD Snakefile.
 Splits input into batches and processes them in parallel on SLURM.
-Note that we are declaring many files temporary here that should be located in a temporary folder to begin with
 """
-
-# container with conda environments
-containerized: "docker://visze/cadd-scripts-v1_7:0.1.1"
 
 # Min version of snakemake
 from snakemake.utils import min_version
-min_version("8.25.2")
 
 # Validation of config file
 from snakemake.utils import validate
@@ -17,17 +12,21 @@ validate(config, schema="schemas/config_schema.yaml")
 
 # CADD environment variable
 import os
+import glob
+import re
 
 envvars:
     "CADD",
 
 # Configuration for batch processing
 BATCH_SIZE = config.get("BatchSize", 1000)
-BATCH_MODE = config.get("BatchMode", False)
 
 # wildcard_constraints to prevent ambiguous rule matching
 wildcard_constraints:
     batch=r"\d+",
+
+# Prioritize score_batch over merge_batches for individual batch files
+ruleorder: score_batch > merge_batches
 
 # START Rules
 
@@ -41,12 +40,12 @@ rule decompress:
     log:
         "{file}.decompress.log",
     resources:
-        mem_mb=2000,
-        runtime=30,
+        mem=2000,
+        time=30,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
     shell:
-        """
-        zcat {input} > {output} 2> {log}
-        """
+        "zcat {input} > {output} 2> {log}"
 
 
 rule prepare:
@@ -61,15 +60,15 @@ rule prepare:
     params:
         cadd=os.environ["CADD"],
     resources:
-        mem_mb=4000,
-        runtime=60,
+        mem=4000,
+        time=60,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
     shell:
-        """
-        cat {input} \
-        | python {params.cadd}/src/scripts/VCF2vepVCF.py \
-        | sort -k1,1 -k2,2n -k4,4 -k5,5 \
-        | uniq > {output} 2> {log}
-        """
+        "cat {input} | "
+        "python {params.cadd}/src/scripts/VCF2vepVCF.py | "
+        "sort -k1,1 -k2,2n -k4,4 -k5,5 | "
+        "uniq > {output} 2> {log}"
 
 
 checkpoint prescore:
@@ -77,7 +76,7 @@ checkpoint prescore:
         "envs/environment_minimal.yml"
     input:
         vcf="{file}.prepared.vcf",
-        prescored="%s/%s" % (os.environ["CADD"], config["PrescoredFolder"]),
+        prescored=lambda wc: os.path.join(os.environ["CADD"], config["PrescoredFolder"]),
     output:
         novel=temp("{file}.novel.vcf"),
         prescored=temp("{file}.pre.tsv"),
@@ -86,586 +85,320 @@ checkpoint prescore:
     params:
         cadd=os.environ["CADD"],
     resources:
-        mem_mb=8000,
-        runtime=120,
+        mem=8000,
+        time=120,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
     shell:
         """
-        # Prescoring
-        echo '## Prescored variant file' > {output.prescored} 2> {log};
-        PRESCORED_FILES=`find -L {input.prescored} -maxdepth 1 -type f -name \\*.tsv.gz | wc -l`
+        echo '## Prescored variant file' > {output.prescored} 2> {log}
+        PRESCORED_FILES=$(find -L {input.prescored} -maxdepth 1 -type f -name \\*.tsv.gz | wc -l)
         cp {input.vcf} {input.vcf}.new
-        if [ ${{PRESCORED_FILES}} -gt 0 ];
-        then
-            for PRESCORED in $(ls {input.prescored}/*.tsv.gz)
-            do
-                cat {input.vcf}.new \
-                | python {params.cadd}/src/scripts/extract_scored.py --header \
-                    -p $PRESCORED --found_out={output.prescored}.tmp \
-                > {input.vcf}.tmp 2>> {log};
-                cat {output.prescored}.tmp >> {output.prescored}
-                mv {input.vcf}.tmp {input.vcf}.new &> {log};
-            done;
-            rm {output.prescored}.tmp &>> {log}
+        if [ $PRESCORED_FILES -gt 0 ]; then
+            for PRESCORED in $(ls {input.prescored}/*.tsv.gz 2>/dev/null || true); do
+                if [ -f "$PRESCORED" ]; then
+                    cat {input.vcf}.new | \
+                    python {params.cadd}/src/scripts/extract_scored.py --header \
+                        -p $PRESCORED --found_out={output.prescored}.tmp \
+                    > {input.vcf}.tmp 2>> {log}
+                    cat {output.prescored}.tmp >> {output.prescored}
+                    mv {input.vcf}.tmp {input.vcf}.new &> {log}
+                fi
+            done
+            rm -f {output.prescored}.tmp &>> {log}
         fi
         mv {input.vcf}.new {output.novel} &>> {log}
         """
 
 
-# Batch splitting rule - only runs if batch mode is enabled
-if BATCH_MODE:
-
-    checkpoint split_batches:
-        conda:
-            "envs/environment_minimal.yml"
-        input:
-            "{file}.novel.vcf",
-        output:
-            batch_list="{file}.batches/batch_list.txt",
-            batch_dir=directory("{file}.batches"),
-        log:
-            "{file}.split_batches.log",
-        params:
-            cadd=os.environ["CADD"],
-            batch_size=BATCH_SIZE,
-        resources:
-            mem_mb=4000,
-            runtime=30,
-        shell:
-            """
-            python {params.cadd}/src/scripts/split_vcf.py \
-                {input} \
-                -o {output.batch_dir} \
-                -b {params.batch_size} \
-                -p batch > {output.batch_list} 2> {log}
-            """
+checkpoint split_batches:
+    conda:
+        "envs/environment_minimal.yml"
+    input:
+        "{file}.novel.vcf",
+    output:
+        batch_list="{file}.batches/batch_list.txt",
+        batch_dir=directory("{file}.batches"),
+    log:
+        "{file}.split_batches.log",
+    params:
+        cadd=os.environ["CADD"],
+        batch_size=BATCH_SIZE,
+    resources:
+        mem=4000,
+        time=30,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
+    shell:
+        "mkdir -p {output.batch_dir} && "
+        "python {params.cadd}/src/scripts/split_vcf.py "
+        "{input} -o {output.batch_dir} -b {params.batch_size} "
+        "-p batch > {output.batch_list} 2> {log}"
 
 
-    def get_batch_files(wildcards):
-        """Get list of batch files from checkpoint"""
-        checkpoint_output = checkpoints.split_batches.get(file=wildcards.file).output.batch_dir
-        batch_list = f"{wildcards.file}.batches/batch_list.txt"
-        with open(batch_list) as f:
-            return [line.strip() for line in f]
+rule annotation_vep_batch:
+    conda:
+        "envs/vep.yml"
+    input:
+        vcf="{file}.batches/batch.batch_{batch}.vcf",
+        veppath=lambda wc: os.path.join(os.environ["CADD"], config["VEPpath"]),
+    output:
+        temp("{file}.batches/batch.batch_{batch}.vep.vcf.gz"),
+    log:
+        "{file}.batches/batch.batch_{batch}.annotation_vep.log",
+    threads: 2
+    params:
+        cadd=os.environ["CADD"],
+        genome_build=config["GenomeBuild"],
+        ensembl_db=config["EnsemblDB"],
+    resources:
+        mem=8000,
+        time=180,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
+    shell:
+        "cat {input.vcf} | "
+        "vep --quiet --cache --offline --dir {input.veppath} "
+        "--buffer 1000 --no_stats --species homo_sapiens "
+        "--db_version={params.ensembl_db} --assembly {params.genome_build} "
+        "--format vcf --regulatory --sift b --polyphen b --per_gene --ccds --domains "
+        "--numbers --canonical --total_length --vcf --force_overwrite --output_file STDOUT | "
+        "bgzip -c > {output} 2> {log}"
 
 
-    rule annotation_vep_batch:
-        conda:
-            "envs/vep.yml"
-        input:
-            vcf="{file}.batches/batch.batch_{batch}.vcf",
-            veppath="%s/%s" % (os.environ["CADD"], config["VEPpath"]),
-        output:
-            temp("{file}.batches/batch.batch_{batch}.vep.vcf.gz"),
-        log:
-            "{file}.batches/batch.batch_{batch}.annotation_vep.log",
-        threads: 2
-        params:
-            cadd=os.environ["CADD"],
-            genome_build=config["GenomeBuild"],
-            ensembl_db=config["EnsemblDB"],
-        resources:
-            mem_mb=8000,
-            runtime=180,
-        shell:
-            """
-            cat {input.vcf} \
-            | vep --quiet --cache --offline --dir {input.veppath} \
-                --buffer 1000 --no_stats --species homo_sapiens \
-                --db_version={params.ensembl_db} --assembly {params.genome_build} \
-                --format vcf --regulatory --sift b --polyphen b --per_gene --ccds --domains \
-                --numbers --canonical --total_length --vcf --force_overwrite --output_file STDOUT \
-            | bgzip -c > {output} 2> {log}
-            """
-
-
-    rule annotate_esm_batch:
-        conda:
-            "envs/esm.yml"
-        input:
-            vcf="{file}.batches/batch.batch_{batch}.vep.vcf.gz",
-            models=expand(
-                "{path}/{model}.pt",
-                path="%s/%s" % (os.environ["CADD"], config["ESMpath"]),
-                model=config["ESMmodels"],
-            ),
-            transcripts="%s/%s/pep.%s.fa"
-            % (os.environ["CADD"], config["ESMpath"], config["EnsemblDB"]),
-        output:
-            missens=temp("{file}.batches/batch.batch_{batch}.esm_missens.vcf.gz"),
-            frameshift=temp("{file}.batches/batch.batch_{batch}.esm_frameshift.vcf.gz"),
-            final=temp("{file}.batches/batch.batch_{batch}.esm.vcf.gz"),
-        log:
-            "{file}.batches/batch.batch_{batch}.annotate_esm.log",
-        threads: 4
-        params:
-            cadd=os.environ["CADD"],
-            models=["--model %s " % model for model in config["ESMmodels"]],
-            batch_size=config["ESMbatchsize"],
-        resources:
-            mem_mb=16000,
-            runtime=360,
-            slurm_extra="--gres=gpu:1",
-        shell:
-            """
-            model_directory=`dirname {input.models[0]}`;
-            model_directory=`dirname $model_directory`;
-
-            python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_missense_av_fast.py \
-            --input {input.vcf} \
-            --transcripts {input.transcripts} \
+rule annotate_esm_batch:
+    conda:
+        "envs/esm.yml"
+    input:
+        vcf="{file}.batches/batch.batch_{batch}.vep.vcf.gz",
+        models=expand(
+            "{path}/{model}.pt",
+            path=os.path.join(os.environ["CADD"], config["ESMpath"]),
+            model=config["ESMmodels"],
+        ),
+        transcripts=os.path.join(os.environ["CADD"], config["ESMpath"], "pep.{}.fa".format(config["EnsemblDB"])),
+    output:
+        missens=temp("{file}.batches/batch.batch_{batch}.esm_missens.vcf.gz"),
+        frameshift=temp("{file}.batches/batch.batch_{batch}.esm_frameshift.vcf.gz"),
+        final=temp("{file}.batches/batch.batch_{batch}.esm.vcf.gz"),
+    log:
+        "{file}.batches/batch.batch_{batch}.annotate_esm.log",
+    threads: 4
+    params:
+        cadd=os.environ["CADD"],
+        models=" ".join(["--model {}".format(m) for m in config["ESMmodels"]]),
+        batch_size=config["ESMbatchsize"],
+    resources:
+        mem=16000,
+        time=360,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
+    shell:
+        """
+        model_directory=$(dirname {input.models[0]})
+        model_directory=$(dirname $model_directory)
+        
+        python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_missense_av_fast.py \
+            --input {input.vcf} --transcripts {input.transcripts} \
             --model-directory $model_directory {params.models} \
             --output {output.missens} --batch-size {params.batch_size} &> {log}
-
-            python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_frameshift_av.py \
-            --input {output.missens} \
-            --transcripts {input.transcripts} \
+        
+        python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_frameshift_av.py \
+            --input {output.missens} --transcripts {input.transcripts} \
             --model-directory $model_directory {params.models} \
             --output {output.frameshift} --batch-size {params.batch_size} &>> {log}
-
-            python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_inFrame_av.py \
-            --input {output.frameshift} \
-            --transcripts {input.transcripts} \
+        
+        python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_inFrame_av.py \
+            --input {output.frameshift} --transcripts {input.transcripts} \
             --model-directory $model_directory {params.models} \
             --output {output.final} --batch-size {params.batch_size} &>> {log}
-            """
+        """
 
 
-    rule annotate_regseq_batch:
+rule annotate_regseq_batch:
+    conda:
+        "envs/regulatorySequence.yml"
+    input:
+        vcf="{file}.batches/batch.batch_{batch}.esm.vcf.gz",
+        reference=lambda wc: os.path.join(os.environ["CADD"], config["REGSEQpath"], "reference.fa"),
+        genome=lambda wc: os.path.join(os.environ["CADD"], config["REGSEQpath"], "reference.fa.genome"),
+        model=lambda wc: os.path.join(os.environ["CADD"], config["REGSEQpath"], "Hyperopt400InclNegatives.json"),
+        weights=lambda wc: os.path.join(os.environ["CADD"], config["REGSEQpath"], "Hyperopt400InclNegatives.h5"),
+    output:
+        temp("{file}.batches/batch.batch_{batch}.regseq.vcf.gz"),
+    log:
+        "{file}.batches/batch.batch_{batch}.annotate_regseq.log",
+    threads: 2
+    params:
+        cadd=os.environ["CADD"],
+    resources:
+        mem=8000,
+        time=180,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
+    shell:
+        "python {params.cadd}/src/scripts/lib/tools/regulatorySequence/predictVariants.py "
+        "--variants {input.vcf} --model {input.model} --weights {input.weights} "
+        "--reference {input.reference} --genome {input.genome} "
+        "--output {output} &> {log}"
+
+
+if config["GenomeBuild"] == "GRCh38":
+
+    rule annotate_mmsplice_batch:
         conda:
-            "envs/regulatorySequence.yml"
+            "envs/mmsplice.yml"
         input:
-            vcf="{file}.batches/batch.batch_{batch}.esm.vcf.gz",
-            reference="%s/%s/%s"
-            % (os.environ["CADD"], config["REGSEQpath"], "reference.fa"),
-            genome="%s/%s/%s"
-            % (os.environ["CADD"], config["REGSEQpath"], "reference.fa.genome"),
-            model="%s/%s/%s"
-            % (os.environ["CADD"], config["REGSEQpath"], "Hyperopt400InclNegatives.json"),
-            weights="%s/%s/%s"
-            % (os.environ["CADD"], config["REGSEQpath"], "Hyperopt400InclNegatives.h5"),
+            vcf="{file}.batches/batch.batch_{batch}.regseq.vcf.gz",
+            transcripts=lambda wc: os.path.join(os.environ["CADD"], config["MMSPLICEpath"], "homo_sapiens.110.gtf"),
+            reference=lambda wc: os.path.join(os.environ["CADD"], config["REFERENCEpath"], "reference.fa"),
         output:
-            temp("{file}.batches/batch.batch_{batch}.regseq.vcf.gz"),
+            mmsplice=temp("{file}.batches/batch.batch_{batch}.mmsplice.vcf.gz"),
+            idx=temp("{file}.batches/batch.batch_{batch}.regseq.vcf.gz.tbi"),
         log:
-            "{file}.batches/batch.batch_{batch}.annotate_regseq.log",
+            "{file}.batches/batch.batch_{batch}.annotate_mmsplice.log",
         threads: 2
         params:
             cadd=os.environ["CADD"],
         resources:
-            mem_mb=8000,
-            runtime=180,
+            mem=12000,
+            time=240,
+            A=config.get("SLURM_ACCOUNT", ""),
+            p=config.get("SLURM_PARTITION", "normal"),
         shell:
-            """
-            python {params.cadd}/src/scripts/lib/tools/regulatorySequence/predictVariants.py \
-            --variants {input.vcf} \
-            --model {input.model} \
-            --weights {input.weights} \
-            --reference {input.reference} \
-            --genome {input.genome} \
-            --output {output} &> {log}
-            """
+            "tabix -p vcf {input.vcf} &> {log} && "
+            "KERAS_BACKEND=tensorflow python {params.cadd}/src/scripts/lib/tools/MMSplice.py "
+            "-i {input.vcf} -g {input.transcripts} -f {input.reference} | "
+            "grep -v '^Variant(CHROM=' | bgzip -c > {output.mmsplice} 2>> {log}"
 
 
-    if config["GenomeBuild"] == "GRCh38":
-
-        rule annotate_mmsplice_batch:
-            conda:
-                "envs/mmsplice.yml"
-            input:
-                vcf="{file}.batches/batch.batch_{batch}.regseq.vcf.gz",
-                transcripts="%s/%s/homo_sapiens.110.gtf"
-                % (os.environ["CADD"], config["MMSPLICEpath"]),
-                reference="%s/%s/reference.fa"
-                % (os.environ["CADD"], config["REFERENCEpath"]),
-            output:
-                mmsplice=temp("{file}.batches/batch.batch_{batch}.mmsplice.vcf.gz"),
-                idx=temp("{file}.batches/batch.batch_{batch}.regseq.vcf.gz.tbi"),
-            log:
-                "{file}.batches/batch.batch_{batch}.annotate_mmsplice.log",
-            threads: 2
-            params:
-                cadd=os.environ["CADD"],
-            resources:
-                mem_mb=12000,
-                runtime=240,
-                slurm_extra="--gres=gpu:1",
-            shell:
-                """
-                tabix -p vcf {input.vcf} &> {log};
-                KERAS_BACKEND=tensorflow python {params.cadd}/src/scripts/lib/tools/MMSplice.py -i {input.vcf} \
-                -g {input.transcripts} \
-                -f {input.reference} | \
-                grep -v '^Variant(CHROM=' | \
-                bgzip -c > {output.mmsplice} 2>> {log}
-                """
+rule annotation_batch:
+    conda:
+        "envs/environment_minimal.yml"
+    input:
+        vcf=lambda wc: "{}.batches/batch.batch_{}.{}.vcf.gz".format(wc.file, wc.batch, "mmsplice" if config["GenomeBuild"] == "GRCh38" else "regseq"),
+        reference_cfg=lambda wc: os.path.join(os.environ["CADD"], config["ReferenceConfig"]),
+    output:
+        temp("{file}.batches/batch.batch_{batch}.anno.tsv.gz"),
+    log:
+        "{file}.batches/batch.batch_{batch}.annotation.log",
+    params:
+        cadd=os.environ["CADD"],
+    resources:
+        mem=4000,
+        time=60,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
+    shell:
+        "zcat {input.vcf} | "
+        "python {params.cadd}/src/scripts/annotateVEPvcf.py -c {input.reference_cfg} | "
+        "gzip -c > {output} 2> {log}"
 
 
-    rule annotation_batch:
-        conda:
-            "envs/environment_minimal.yml"
-        input:
-            vcf=lambda wc: "{file}.batches/batch.batch_{batch}.%s.vcf.gz"
-            % ("mmsplice" if config["GenomeBuild"] == "GRCh38" else "regseq"),
-            reference_cfg="%s/%s" % (os.environ["CADD"], config["ReferenceConfig"]),
-        output:
-            temp("{file}.batches/batch.batch_{batch}.anno.tsv.gz"),
-        log:
-            "{file}.batches/batch.batch_{batch}.annotation.log",
-        params:
-            cadd=os.environ["CADD"],
-        resources:
-            mem_mb=4000,
-            runtime=60,
-        shell:
-            """
-            zcat {input.vcf} \
-            | python {params.cadd}/src/scripts/annotateVEPvcf.py \
-                -c {input.reference_cfg} \
-            | gzip -c > {output} 2> {log}
-            """
+rule imputation_batch:
+    conda:
+        "envs/environment_minimal.yml"
+    input:
+        tsv="{file}.batches/batch.batch_{batch}.anno.tsv.gz",
+        impute_cfg=lambda wc: os.path.join(os.environ["CADD"], config["ImputeConfig"]),
+    output:
+        temp("{file}.batches/batch.batch_{batch}.csv.gz"),
+    log:
+        "{file}.batches/batch.batch_{batch}.imputation.log",
+    params:
+        cadd=os.environ["CADD"],
+    resources:
+        mem=4000,
+        time=60,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
+    shell:
+        "zcat {input.tsv} | "
+        "python {params.cadd}/src/scripts/trackTransformation.py -b "
+        "-c {input.impute_cfg} -o {output} --noheader &>> {log}"
 
 
-    rule imputation_batch:
-        conda:
-            "envs/environment_minimal.yml"
-        input:
-            tsv="{file}.batches/batch.batch_{batch}.anno.tsv.gz",
-            impute_cfg="%s/%s" % (os.environ["CADD"], config["ImputeConfig"]),
-        output:
-            temp("{file}.batches/batch.batch_{batch}.csv.gz"),
-        log:
-            "{file}.batches/batch.batch_{batch}.imputation.log",
-        params:
-            cadd=os.environ["CADD"],
-        resources:
-            mem_mb=4000,
-            runtime=60,
-        shell:
-            """
-            zcat {input.tsv} \
-            | python {params.cadd}/src/scripts/trackTransformation.py -b \
-                -c {input.impute_cfg} -o {output} --noheader &>> {log};
-            """
+rule score_batch:
+    conda:
+        "envs/environment_minimal.yml"
+    input:
+        impute="{file}.batches/batch.batch_{batch}.csv.gz",
+        anno="{file}.batches/batch.batch_{batch}.anno.tsv.gz",
+        conversion_table=lambda wc: os.path.join(os.environ["CADD"], config["ConversionTable"]),
+        model_file=lambda wc: os.path.join(os.environ["CADD"], config["Model"]),
+    output:
+        temp("{file}.batches/batch.batch_{batch}.novel.tsv"),
+    log:
+        "{file}.batches/batch.batch_{batch}.score.log",
+    params:
+        cadd=os.environ["CADD"],
+        use_anno=config["Annotation"],
+        columns=config["Columns"],
+    resources:
+        mem=8000,
+        time=120,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
+    shell:
+        """
+        python {params.cadd}/src/scripts/predictSKmodel.py \
+            -i {input.impute} -m {input.model_file} -a {input.anno} | \
+        python {params.cadd}/src/scripts/max_line_hierarchy.py --all | \
+        python {params.cadd}/src/scripts/appendPHREDscore.py \
+            -t {input.conversion_table} > {output} 2>> {log}
+        
+        if [ "{params.use_anno}" = 'False' ]; then
+            cat {output} | cut -f {params.columns} | uniq > {output}.tmp 2>> {log}
+            mv {output}.tmp {output} &>> {log}
+        fi
+        """
 
 
-    rule score_batch:
-        conda:
-            "envs/environment_minimal.yml"
-        input:
-            impute="{file}.batches/batch.batch_{batch}.csv.gz",
-            anno="{file}.batches/batch.batch_{batch}.anno.tsv.gz",
-            conversion_table="%s/%s" % (os.environ["CADD"], config["ConversionTable"]),
-            model_file="%s/%s" % (os.environ["CADD"], config["Model"]),
-        output:
-            temp("{file}.batches/batch.batch_{batch}.novel.tsv"),
-        log:
-            "{file}.batches/batch.batch_{batch}.score.log",
-        params:
-            cadd=os.environ["CADD"],
-            use_anno=config["Annotation"],
-            columns=config["Columns"],
-        resources:
-            mem_mb=8000,
-            runtime=120,
-        shell:
-            """
-            python {params.cadd}/src/scripts/predictSKmodel.py \
-                -i {input.impute} -m {input.model_file} -a {input.anno} \
-            | python {params.cadd}/src/scripts/max_line_hierarchy.py --all \
-            | python {params.cadd}/src/scripts/appendPHREDscore.py \
-                -t {input.conversion_table} > {output} 2>> {log};
-
-            if [ "{params.use_anno}" = 'False' ]
-            then
-                cat {output} | cut -f {params.columns} | uniq > {output}.tmp 2>> {log};
-                mv {output}.tmp {output} &>> {log}
-            fi
-            """
+def get_batch_scores(wildcards):
+    """Aggregate all batch score files"""
+    checkpoint_output = checkpoints.split_batches.get(**wildcards).output.batch_dir
+    
+    # Use glob to find all batch VCF files
+    batch_pattern = os.path.join(checkpoint_output, "batch.batch_*.vcf")
+    batch_files = glob.glob(batch_pattern)
+    
+    # Extract batch numbers and return novel.tsv paths
+    result = []
+    for vcf_file in sorted(batch_files):
+        match = re.search(r'batch\.batch_(\d+)\.vcf$', vcf_file)
+        if match:
+            batch_num = match.group(1)
+            result.append("{}.batches/batch.batch_{}.novel.tsv".format(wildcards.file, batch_num))
+    
+    return result
 
 
-    def get_batch_scores(wildcards):
-        """Aggregate all batch score files"""
-        checkpoint_output = checkpoints.split_batches.get(file=wildcards.file).output.batch_dir
-        batch_list = f"{wildcards.file}.batches/batch_list.txt"
+rule merge_batches:
+    conda:
+        "envs/environment_minimal.yml"
+    input:
+        get_batch_scores,
+    output:
+        temp("{file}.novel.tsv"),
+    log:
+        "{file}.merge_batches.log",
+    params:
+        cadd=os.environ["CADD"],
+    resources:
+        mem=8000,
+        time=60,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
+    shell:
+        "cat {input} > {output} 2> {log}"
 
-        # Read batch list and extract batch numbers
-        batch_nums = []
-        with open(batch_list) as f:
-            for line in f:
-                # Extract batch number from filename like batch.batch_0001.vcf
-                import re
-                match = re.search(r'batch_(\d+)\.vcf', line)
-                if match:
-                    batch_nums.append(match.group(1))
-
-        return [f"{wildcards.file}.batches/batch.batch_{batch}.novel.tsv" for batch in batch_nums]
-
-
-    rule merge_batches:
-        conda:
-            "envs/environment_minimal.yml"
-        input:
-            get_batch_scores,
-        output:
-            temp("{file}.novel.tsv"),
-        log:
-            "{file}.merge_batches.log",
-        params:
-            cadd=os.environ["CADD"],
-        resources:
-            mem_mb=8000,
-            runtime=60,
-        shell:
-            """
-            # Concatenate all batch files
-            cat {input} > {output} 2> {log}
-            """
-
-
-# Non-batch rules (original pipeline) - used when batch mode is disabled
-else:
-
-    rule annotation_vep:
-        conda:
-            "envs/vep.yml"
-        input:
-            vcf="{file}.novel.vcf",
-            veppath="%s/%s" % (os.environ["CADD"], config["VEPpath"]),
-        output:
-            temp("{file}.vep.vcf.gz"),
-        log:
-            "{file}.annotation_vep.log",
-        threads: 2
-        params:
-            cadd=os.environ["CADD"],
-            genome_build=config["GenomeBuild"],
-            ensembl_db=config["EnsemblDB"],
-        resources:
-            mem_mb=8000,
-            runtime=180,
-        shell:
-            """
-            cat {input.vcf} \
-            | vep --quiet --cache --offline --dir {input.veppath} \
-                --buffer 1000 --no_stats --species homo_sapiens \
-                --db_version={params.ensembl_db} --assembly {params.genome_build} \
-                --format vcf --regulatory --sift b --polyphen b --per_gene --ccds --domains \
-                --numbers --canonical --total_length --vcf --force_overwrite --output_file STDOUT \
-            | bgzip -c > {output} 2> {log}
-            """
-
-
-    rule annotate_esm:
-        conda:
-            "envs/esm.yml"
-        input:
-            vcf="{file}.vep.vcf.gz",
-            models=expand(
-                "{path}/{model}.pt",
-                path="%s/%s" % (os.environ["CADD"], config["ESMpath"]),
-                model=config["ESMmodels"],
-            ),
-            transcripts="%s/%s/pep.%s.fa"
-            % (os.environ["CADD"], config["ESMpath"], config["EnsemblDB"]),
-        output:
-            missens=temp("{file}.esm_missens.vcf.gz"),
-            frameshift=temp("{file}.esm_frameshift.vcf.gz"),
-            final=temp("{file}.esm.vcf.gz"),
-        log:
-            "{file}.annotate_esm.log",
-        threads: 4
-        params:
-            cadd=os.environ["CADD"],
-            models=["--model %s " % model for model in config["ESMmodels"]],
-            batch_size=config["ESMbatchsize"],
-        resources:
-            mem_mb=16000,
-            runtime=360,
-            slurm_extra="--gres=gpu:1",
-        shell:
-            """
-            model_directory=`dirname {input.models[0]}`;
-            model_directory=`dirname $model_directory`;
-
-            python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_missense_av_fast.py \
-            --input {input.vcf} \
-            --transcripts {input.transcripts} \
-            --model-directory $model_directory {params.models} \
-            --output {output.missens} --batch-size {params.batch_size} &> {log}
-
-            python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_frameshift_av.py \
-            --input {output.missens} \
-            --transcripts {input.transcripts} \
-            --model-directory $model_directory {params.models} \
-            --output {output.frameshift} --batch-size {params.batch_size} &>> {log}
-
-            python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_inFrame_av.py \
-            --input {output.frameshift} \
-            --transcripts {input.transcripts} \
-            --model-directory $model_directory {params.models} \
-            --output {output.final} --batch-size {params.batch_size} &>> {log}
-            """
-
-
-    rule annotate_regseq:
-        conda:
-            "envs/regulatorySequence.yml"
-        input:
-            vcf="{file}.esm.vcf.gz",
-            reference="%s/%s/%s"
-            % (os.environ["CADD"], config["REGSEQpath"], "reference.fa"),
-            genome="%s/%s/%s"
-            % (os.environ["CADD"], config["REGSEQpath"], "reference.fa.genome"),
-            model="%s/%s/%s"
-            % (os.environ["CADD"], config["REGSEQpath"], "Hyperopt400InclNegatives.json"),
-            weights="%s/%s/%s"
-            % (os.environ["CADD"], config["REGSEQpath"], "Hyperopt400InclNegatives.h5"),
-        output:
-            temp("{file}.regseq.vcf.gz"),
-        log:
-            "{file}.annotate_regseq.log",
-        threads: 2
-        params:
-            cadd=os.environ["CADD"],
-        resources:
-            mem_mb=8000,
-            runtime=180,
-        shell:
-            """
-            python {params.cadd}/src/scripts/lib/tools/regulatorySequence/predictVariants.py \
-            --variants {input.vcf} \
-            --model {input.model} \
-            --weights {input.weights} \
-            --reference {input.reference} \
-            --genome {input.genome} \
-            --output {output} &> {log}
-            """
-
-
-    if config["GenomeBuild"] == "GRCh38":
-
-        rule annotate_mmsplice:
-            conda:
-                "envs/mmsplice.yml"
-            input:
-                vcf="{file}.regseq.vcf.gz",
-                transcripts="%s/%s/homo_sapiens.110.gtf"
-                % (os.environ["CADD"], config["MMSPLICEpath"]),
-                reference="%s/%s/reference.fa"
-                % (os.environ["CADD"], config["REFERENCEpath"]),
-            output:
-                mmsplice=temp("{file}.mmsplice.vcf.gz"),
-                idx=temp("{file}.regseq.vcf.gz.tbi"),
-            log:
-                "{file}.annotate_mmsplice.log",
-            threads: 2
-            params:
-                cadd=os.environ["CADD"],
-            resources:
-                mem_mb=12000,
-                runtime=240,
-                slurm_extra="--gres=gpu:1",
-            shell:
-                """
-                tabix -p vcf {input.vcf} &> {log};
-                KERAS_BACKEND=tensorflow python {params.cadd}/src/scripts/lib/tools/MMSplice.py -i {input.vcf} \
-                -g {input.transcripts} \
-                -f {input.reference} | \
-                grep -v '^Variant(CHROM=' | \
-                bgzip -c > {output.mmsplice} 2>> {log}
-                """
-
-
-    rule annotation:
-        conda:
-            "envs/environment_minimal.yml"
-        input:
-            vcf=lambda wc: "{file}.%s.vcf.gz"
-            % ("mmsplice" if config["GenomeBuild"] == "GRCh38" else "regseq"),
-            reference_cfg="%s/%s" % (os.environ["CADD"], config["ReferenceConfig"]),
-        output:
-            temp("{file}.anno.tsv.gz"),
-        log:
-            "{file}.annotation.log",
-        params:
-            cadd=os.environ["CADD"],
-        resources:
-            mem_mb=4000,
-            runtime=60,
-        shell:
-            """
-            zcat {input.vcf} \
-            | python {params.cadd}/src/scripts/annotateVEPvcf.py \
-                -c {input.reference_cfg} \
-            | gzip -c > {output} 2> {log}
-            """
-
-
-    rule imputation:
-        conda:
-            "envs/environment_minimal.yml"
-        input:
-            tsv="{file}.anno.tsv.gz",
-            impute_cfg="%s/%s" % (os.environ["CADD"], config["ImputeConfig"]),
-        output:
-            temp("{file}.csv.gz"),
-        log:
-            "{file}.imputation.log",
-        params:
-            cadd=os.environ["CADD"],
-        resources:
-            mem_mb=4000,
-            runtime=60,
-        shell:
-            """
-            zcat {input.tsv} \
-            | python {params.cadd}/src/scripts/trackTransformation.py -b \
-                -c {input.impute_cfg} -o {output} --noheader &>> {log};
-            """
-
-
-    rule score:
-        conda:
-            "envs/environment_minimal.yml"
-        input:
-            impute="{file}.csv.gz",
-            anno="{file}.anno.tsv.gz",
-            conversion_table="%s/%s" % (os.environ["CADD"], config["ConversionTable"]),
-            model_file="%s/%s" % (os.environ["CADD"], config["Model"]),
-        output:
-            temp("{file}.novel.tsv"),
-        log:
-            "{file}.score.log",
-        params:
-            cadd=os.environ["CADD"],
-            use_anno=config["Annotation"],
-            columns=config["Columns"],
-        resources:
-            mem_mb=8000,
-            runtime=120,
-        shell:
-            """
-            python {params.cadd}/src/scripts/predictSKmodel.py \
-                -i {input.impute} -m {input.model_file} -a {input.anno} \
-            | python {params.cadd}/src/scripts/max_line_hierarchy.py --all \
-            | python {params.cadd}/src/scripts/appendPHREDscore.py \
-                -t {input.conversion_table} > {output} 2>> {log};
-
-            if [ "{params.use_anno}" = 'False' ]
-            then
-                cat {output} | cut -f {params.columns} | uniq > {output}.tmp 2>> {log};
-                mv {output}.tmp {output} &>> {log}
-            fi
-            """
-
-
-# Common rules used by both batch and non-batch modes
 
 def aggregate_input(wildcards):
     with checkpoints.prescore.get(file=wildcards.file).output["novel"].open() as f:
-        output = ["{file}.pre.tsv"]
+        output = ["{}.pre.tsv".format(wildcards.file)]
         for line in f:
             if not line.startswith("#") and line.strip() != "":
-                output.append("{file}.novel.tsv")
+                output.append("{}.novel.tsv".format(wildcards.file))
                 break
         return output
 
@@ -682,18 +415,15 @@ rule join:
     params:
         header=config["Header"],
     resources:
-        mem_mb=4000,
-        runtime=60,
+        mem=4000,
+        time=60,
+        A=config.get("SLURM_ACCOUNT", ""),
+        p=config.get("SLURM_PARTITION", "normal"),
     shell:
         """
         (
-            echo "{params.header}";
-            cat {input} | grep -v "^##" | grep "^#" | tail -n 1;
-            cat {input} | \
-            grep -v "^#" | \
-            sort -k1,1 -k2,2n -k3,3 -k4,4 || true;
-        ) | bgzip -c > {output} 2>> {log};
+            echo "{params.header}"
+            cat {input} | grep -v "^##" | grep "^#" | tail -n 1
+            cat {input} | grep -v "^#" | sort -k1,1 -k2,2n -k3,3 -k4,4 || true
+        ) | bgzip -c > {output} 2>> {log}
         """
-
-
-# END Rules

@@ -85,6 +85,14 @@ properties:
     type: integer
     default: 1000
     description: Number of variants per batch when BatchMode is enabled
+  SLURM_ACCOUNT:
+    type: string
+    default: "Research_Project-MRC148213"
+    description: SLURM account for job submission
+  SLURM_PARTITION:
+    type: string
+    default: "pq"
+    description: SLURM partition/queue for job submission
 
 additionalProperties: false
 
