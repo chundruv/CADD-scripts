@@ -195,34 +195,21 @@ then
     echo "  Account: $SLURM_ACCOUNT"
     echo "  Partition: $SLURM_PARTITION"
     echo "  Max jobs: $MAX_JOBS"
-
-    # Build SLURM-specific command
-    CLUSTER_CMD="sbatch -A $SLURM_ACCOUNT -p $SLURM_PARTITION -c {threads} --mem={resources.mem_mb}M -t {resources.runtime}"
-
-    if [ "$BATCH_MODE" = true ]
-    then
-        echo "Running in BATCH MODE with $BATCH_SIZE variants per batch"
-        eval snakemake $TMP_OUTFILE \
-            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
-            --cores $CORES --configfile $CONFIG \
-            --snakefile $SNAKEFILE $VERBOSE \
-            --config BatchMode=True BatchSize=$BATCH_SIZE \
-            --cluster \"$CLUSTER_CMD\" \
-            --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
-            --jobs $MAX_JOBS \
-            --latency-wait 60 \
-            --retries 3
-    else
-        eval snakemake $TMP_OUTFILE \
-            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
-            --cores $CORES --configfile $CONFIG \
-            --snakefile $SNAKEFILE $VERBOSE \
-            --cluster \"$CLUSTER_CMD\" \
-            --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
-            --jobs $MAX_JOBS \
-            --latency-wait 60 \
-            --retries 3
-    fi
+    echo ""
+    echo "ERROR: SLURM cluster submission is not supported in Snakemake 8.x with --cluster flag."
+    echo "Please use one of these alternatives:"
+    echo ""
+    echo "1. Run WITHOUT -s flag for local batch processing:"
+    echo "   ./CADD_batch.sh -b -m -n 1000 -o test.tsv.gz input.vcf.gz"
+    echo ""
+    echo "2. Install snakemake-executor-plugin-slurm:"
+    echo "   conda install -c conda-forge -c bioconda snakemake-executor-plugin-slurm"
+    echo "   Then the script will be updated to support SLURM."
+    echo ""
+    echo "3. Use the original CADD.sh script (non-batch mode):"
+    echo "   ./CADD.sh input.vcf.gz"
+    echo ""
+    exit 1
 else
     # Non-SLURM command
     if [ "$BATCH_MODE" = true ]
