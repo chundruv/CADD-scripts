@@ -35,7 +35,8 @@ def split_vcf(input_file, output_dir, batch_size, output_prefix):
     Returns:
         List of batch file paths
     """
-    os.makedirs(output_dir, exist_ok=True)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     batch_files = []
     header_lines = []
@@ -55,7 +56,7 @@ def split_vcf(input_file, output_dir, batch_size, output_prefix):
                         current_batch.close()
 
                     batch_num += 1
-                    batch_file = os.path.join(output_dir, f"{output_prefix}.batch_{batch_num:04d}.vcf")
+                    batch_file = os.path.join(output_dir, "{}.batch_{:04d}.vcf".format(output_prefix, batch_num))
                     batch_files.append(batch_file)
                     current_batch = open(batch_file, 'w')
 
@@ -71,10 +72,10 @@ def split_vcf(input_file, output_dir, batch_size, output_prefix):
         current_batch.close()
 
     # Write batch list file
-    batch_list_file = os.path.join(output_dir, f"{output_prefix}.batch_list.txt")
+    batch_list_file = os.path.join(output_dir, "{}.batch_list.txt".format(output_prefix))
     with open(batch_list_file, 'w') as f:
         for batch_file in batch_files:
-            f.write(f"{batch_file}\n")
+            f.write("{}\n".format(batch_file))
 
     return batch_files, batch_list_file
 
@@ -106,8 +107,8 @@ def main():
 
     args = parser.parse_args()
 
-    print(f"Splitting {args.input} into batches of {args.batch_size} variants...",
-          file=sys.stderr)
+    sys.stderr.write("Splitting {} into batches of {} variants...\n".format(
+        args.input, args.batch_size))
 
     batch_files, batch_list = split_vcf(
         args.input,
@@ -116,8 +117,8 @@ def main():
         args.prefix
     )
 
-    print(f"Created {len(batch_files)} batch files", file=sys.stderr)
-    print(f"Batch list written to: {batch_list}", file=sys.stderr)
+    sys.stderr.write("Created {} batch files\n".format(len(batch_files)))
+    sys.stderr.write("Batch list written to: {}\n".format(batch_list))
 
     # Output batch list file path for Snakemake
     print(batch_list)

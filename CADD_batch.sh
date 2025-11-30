@@ -191,7 +191,6 @@ fi
 # Build snakemake command
 if [ "$BATCH_MODE" = true ]
 then
-    echo "Running in BATCH MODE with $BATCH_SIZE variants per batch"
     eval snakemake $TMP_OUTFILE \
         --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
         --cores $CORES --configfile $CONFIG \
