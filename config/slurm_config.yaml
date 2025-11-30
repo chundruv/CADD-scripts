@@ -2,11 +2,11 @@
 # Copy this file and customize for your cluster
 
 # SLURM account and partition settings
-slurm_account: "your_account_here"  # Replace with your SLURM account (-A flag)
-slurm_partition: "normal"  # Replace with your partition/queue (-q flag)
+slurm_account: "Research_Project-MRC148213"  # Replace with your SLURM account (-A flag)
+slurm_partition: "pq"  # Replace with your partition/queue (-q flag)
 
 # Optional: GPU partition for ESM and MMSplice rules
-slurm_gpu_partition: "gpu"  # Partition with GPU access
+#slurm_gpu_partition: "gpu"  # Partition with GPU access
 
 # Default resource limits (can be overridden per rule in Snakefile)
 default_resources:
@@ -25,15 +25,11 @@ rule_resources:
     mem_mb: 16000
     runtime: 360
     cpus: 4
-    partition: "gpu"  # Override partition for GPU jobs
-    extra: "--gres=gpu:1"
 
   annotate_mmsplice:
     mem_mb: 12000
     runtime: 240
     cpus: 2
-    partition: "gpu"
-    extra: "--gres=gpu:1"
 
   annotate_regseq:
     mem_mb: 8000

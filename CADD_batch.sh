@@ -202,22 +202,22 @@ then
     if [ "$BATCH_MODE" = true ]
     then
         echo "Running in BATCH MODE with $BATCH_SIZE variants per batch"
-        snakemake $TMP_OUTFILE \
+        eval snakemake $TMP_OUTFILE \
             --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
             --cores $CORES --configfile $CONFIG \
             --snakefile $SNAKEFILE $VERBOSE \
             --config BatchMode=True BatchSize=$BATCH_SIZE \
-            --cluster "$CLUSTER_CMD" \
+            --cluster \"$CLUSTER_CMD\" \
             --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
             --jobs $MAX_JOBS \
             --latency-wait 60 \
             --retries 3
     else
-        snakemake $TMP_OUTFILE \
+        eval snakemake $TMP_OUTFILE \
             --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
             --cores $CORES --configfile $CONFIG \
             --snakefile $SNAKEFILE $VERBOSE \
-            --cluster "$CLUSTER_CMD" \
+            --cluster \"$CLUSTER_CMD\" \
             --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
             --jobs $MAX_JOBS \
             --latency-wait 60 \
@@ -228,13 +228,13 @@ else
     if [ "$BATCH_MODE" = true ]
     then
         echo "Running in BATCH MODE with $BATCH_SIZE variants per batch"
-        snakemake $TMP_OUTFILE \
+        eval snakemake $TMP_OUTFILE \
             --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
             --cores $CORES --configfile $CONFIG \
             --snakefile $SNAKEFILE $VERBOSE \
             --config BatchMode=True BatchSize=$BATCH_SIZE
     else
-        snakemake $TMP_OUTFILE \
+        eval snakemake $TMP_OUTFILE \
             --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
             --cores $CORES --configfile $CONFIG \
             --snakefile $SNAKEFILE $VERBOSE
