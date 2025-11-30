@@ -77,6 +77,14 @@ properties:
   Columns:
     type: string
     pattern: "^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$"
+  BatchMode:
+    type: boolean
+    default: false
+    description: Enable batch processing mode (splits input into batches)
+  BatchSize:
+    type: integer
+    default: 1000
+    description: Number of variants per batch when BatchMode is enabled
 
 additionalProperties: false
 
