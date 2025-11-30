@@ -189,18 +189,49 @@ else
 fi
 
 # Build snakemake command
-if [ "$BATCH_MODE" = true ]
+if [ "$USE_SLURM" = true ]
 then
-    eval snakemake $TMP_OUTFILE \
-        --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
-        --cores $CORES --configfile $CONFIG \
-        --snakefile $SNAKEFILE $VERBOSE \
-        --config BatchMode=True BatchSize=$BATCH_SIZE
+    echo "Using SLURM for job submission"
+    echo "  Account: $SLURM_ACCOUNT"
+    echo "  Partition: $SLURM_PARTITION"
+    echo "  Max jobs: $MAX_JOBS"
+
+    if [ "$BATCH_MODE" = true ]
+    then
+        eval snakemake $TMP_OUTFILE \
+            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --executor slurm --jobs $MAX_JOBS \
+            --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION mem_mb=8000 runtime=120 \
+            --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE \
+            --config BatchMode=True BatchSize=$BATCH_SIZE \
+            --latency-wait 60 \
+            --retries 3
+    else
+        eval snakemake $TMP_OUTFILE \
+            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --executor slurm --jobs $MAX_JOBS \
+            --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION mem_mb=8000 runtime=120 \
+            --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE \
+            --latency-wait 60 \
+            --retries 3
+    fi
 else
-    eval snakemake $TMP_OUTFILE \
-        --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
-        --cores $CORES --configfile $CONFIG \
-        --snakefile $SNAKEFILE $VERBOSE
+    # Non-SLURM command (local execution)
+    if [ "$BATCH_MODE" = true ]
+    then
+        eval snakemake $TMP_OUTFILE \
+            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --cores $CORES --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE \
+            --config BatchMode=True BatchSize=$BATCH_SIZE
+    else
+        eval snakemake $TMP_OUTFILE \
+            --sdm conda $SIGNULARITYARGS --conda-prefix $CADD/envs/conda \
+            --cores $CORES --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE
+    fi
 fi
 
 mv $TMP_OUTFILE $OUTFILE
