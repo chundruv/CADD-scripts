@@ -195,19 +195,25 @@ rule annotate_esm_batch:
         p=config.get("SLURM_PARTITION", "normal"),
     shell:
         """
+        # Set threading environment variables for PyTorch
+        export OMP_NUM_THREADS={threads}
+        export MKL_NUM_THREADS={threads}
+        export OPENBLAS_NUM_THREADS={threads}
+        export TORCH_NUM_THREADS={threads}
+
         model_directory=$(dirname {input.models[0]})
         model_directory=$(dirname $model_directory)
-        
+
         python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_missense_av_fast.py \
             --input {input.vcf} --transcripts {input.transcripts} \
             --model-directory $model_directory {params.models} \
             --output {output.missens} --batch-size {params.batch_size} &> {log}
-        
+
         python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_frameshift_av.py \
             --input {output.missens} --transcripts {input.transcripts} \
             --model-directory $model_directory {params.models} \
             --output {output.frameshift} --batch-size {params.batch_size} &>> {log}
-        
+
         python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_inFrame_av.py \
             --input {output.frameshift} --transcripts {input.transcripts} \
             --model-directory $model_directory {params.models} \
@@ -266,10 +272,19 @@ if config["GenomeBuild"] == "GRCh38":
             A=config.get("SLURM_ACCOUNT", ""),
             p=config.get("SLURM_PARTITION", "normal"),
         shell:
-            "tabix -p vcf {input.vcf} &> {log} && "
-            "KERAS_BACKEND=tensorflow python {params.cadd}/src/scripts/lib/tools/MMSplice.py "
-            "-i {input.vcf} -g {input.transcripts} -f {input.reference} | "
-            "grep -v '^Variant(CHROM=' | bgzip -c > {output.mmsplice} 2>> {log}"
+            """
+            # Set threading environment variables for TensorFlow
+            export OMP_NUM_THREADS={threads}
+            export MKL_NUM_THREADS={threads}
+            export OPENBLAS_NUM_THREADS={threads}
+            export TF_NUM_INTRAOP_THREADS={threads}
+            export TF_NUM_INTEROP_THREADS=1
+
+            tabix -p vcf {input.vcf} &> {log}
+            KERAS_BACKEND=tensorflow python {params.cadd}/src/scripts/lib/tools/MMSplice.py \
+                -i {input.vcf} -g {input.transcripts} -f {input.reference} | \
+                grep -v '^Variant(CHROM=' | bgzip -c > {output.mmsplice} 2>> {log}
+            """
 
 
 rule annotation_batch:
