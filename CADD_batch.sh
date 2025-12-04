@@ -212,7 +212,8 @@ then
         --snakefile $SNAKEFILE $VERBOSE \
         --config SLURM_ACCOUNT=$SLURM_ACCOUNT SLURM_PARTITION=$SLURM_PARTITION \
         --latency-wait 60 \
-        --retries 3"
+        --retries 3 \
+        --rerun-incomplete"
 
     if [ "$BATCH_MODE" = true ]
     then
