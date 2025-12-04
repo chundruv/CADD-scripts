@@ -192,7 +192,7 @@ fi
 
 # Define the simplified CLUSTER_COMMAND.
 # Snakemake now substitutes the values defined in cluster_config.yaml.
-CLUSTER_COMMAND="sbatch -A {resources.A} -p {resources.p} --time={resources.time} --mem={resources.mem}M --parsable"
+CLUSTER_COMMAND="sbatch -A {resources.A} -p {resources.p} --cpus-per-task={threads} --time={resources.time} --mem={resources.mem}M --parsable"
 
 if [ "$USE_SLURM" = true ]
 then
