@@ -1,4 +1,6 @@
 ---
+# ESM (Evolutionary Scale Modeling) Environment - Optimized
+# For protein language model inference with PyTorch 2.x
 name: esm_annotate
 channels:
   - conda-forge
@@ -6,17 +8,28 @@ channels:
   - nvidia
   - bioconda
   - nodefaults
+
 dependencies:
+  # Python and core scientific libraries
+  - python>=3.9,<3.12
   - numpy
-  - python
   - click
   - biopython
-  - pytorch=1.13.1
-  - pytorch-cuda=11.6
-  - torchaudio=0.13.1
-  - torchvision=0.14.1
-  - mkl=2024.0.0
-  - htslib
+
+  # PyTorch 2.x with CUDA support (auto-detects available CUDA version)
+  # For CPU-only: remove pytorch-cuda line
+  - pytorch>=2.0
+  - pytorch-cuda  # Automatically selects compatible CUDA version
+
+  # Math libraries for optimized CPU performance
+  - mkl  # Intel Math Kernel Library for fast linear algebra
+
+  # Bioinformatics tools
+  - htslib  # For VCF/BAM file handling
+
+  # Package manager
   - pip
+
+  # Python packages via pip
   - pip:
-      - fair-esm==2.0.0
+      - fair-esm==2.0.0  # ESM protein language models
