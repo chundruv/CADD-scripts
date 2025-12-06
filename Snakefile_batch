@@ -195,6 +195,10 @@ rule annotate_esm_batch:
         p=config.get("SLURM_PARTITION", "normal"),
     shell:
         """
+        # Enable GPU for PyTorch (ESM)
+        export CUDA_VISIBLE_DEVICES=0
+        export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+
         # Set threading environment variables for PyTorch
         export OMP_NUM_THREADS={threads}
         export MKL_NUM_THREADS={threads}
@@ -273,6 +277,10 @@ if config["GenomeBuild"] == "GRCh38":
             p=config.get("SLURM_PARTITION", "normal"),
         shell:
             """
+            # Enable GPU for TensorFlow (MMSplice) - Note: TF 1.1.0 is very old
+            export CUDA_VISIBLE_DEVICES=0
+            export TF_FORCE_GPU_ALLOW_GROWTH=true
+
             # Set threading environment variables for TensorFlow
             export OMP_NUM_THREADS={threads}
             export MKL_NUM_THREADS={threads}

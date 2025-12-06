@@ -146,32 +146,40 @@ rule annotate_esm:
         final=temp("{file}.esm.vcf.gz"),
     log:
         "{file}.annotate_esm.log",
+    threads: 16
     params:
         cadd=os.environ["CADD"],
-        models=["--model %s " % model for model in config["ESMmodels"]],
+        models=" ".join(["--model {}".format(m) for m in config["ESMmodels"]]),
         batch_size=config["ESMbatchsize"],
     shell:
         """
-        model_directory=`dirname {input.models[0]}`;
-        model_directory=`dirname $model_directory`;
+        # Enable GPU for PyTorch (ESM)
+        export CUDA_VISIBLE_DEVICES=0
+        export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+
+        # Set threading environment variables for PyTorch
+        export OMP_NUM_THREADS={threads}
+        export MKL_NUM_THREADS={threads}
+        export OPENBLAS_NUM_THREADS={threads}
+        export TORCH_NUM_THREADS={threads}
+
+        model_directory=$(dirname {input.models[0]})
+        model_directory=$(dirname $model_directory)
 
         python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_missense_av_fast.py \
-        --input {input.vcf} \
-        --transcripts {input.transcripts} \
-        --model-directory $model_directory {params.models} \
-        --output {output.missens} --batch-size {params.batch_size} &> {log}
+            --input {input.vcf} --transcripts {input.transcripts} \
+            --model-directory $model_directory {params.models} \
+            --output {output.missens} --batch-size {params.batch_size} &> {log}
 
         python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_frameshift_av.py \
-        --input {output.missens} \
-        --transcripts {input.transcripts} \
-        --model-directory $model_directory {params.models} \
-        --output {output.frameshift} --batch-size {params.batch_size} &>> {log}
+            --input {output.missens} --transcripts {input.transcripts} \
+            --model-directory $model_directory {params.models} \
+            --output {output.frameshift} --batch-size {params.batch_size} &>> {log}
 
         python {params.cadd}/src/scripts/lib/tools/esmScore/esmScore_inFrame_av.py \
-        --input {output.frameshift} \
-        --transcripts {input.transcripts} \
-        --model-directory $model_directory {params.models} \
-        --output {output.final} --batch-size {params.batch_size} &>> {log}
+            --input {output.frameshift} --transcripts {input.transcripts} \
+            --model-directory $model_directory {params.models} \
+            --output {output.final} --batch-size {params.batch_size} &>> {log}
         """
 
 
@@ -222,16 +230,25 @@ if config["GenomeBuild"] == "GRCh38":
             idx=temp("{file}.regseq.vcf.gz.tbi"),
         log:
             "{file}.annotate_mmsplice.log",
+        threads: 8
         params:
             cadd=os.environ["CADD"],
         shell:
             """
-            tabix -p vcf {input.vcf} &> {log};
-            KERAS_BACKEND=tensorflow python {params.cadd}/src/scripts/lib/tools/MMSplice.py -i {input.vcf} \
-            -g {input.transcripts} \
-            -f {input.reference} | \
-            grep -v '^Variant(CHROM=' | \
-            bgzip -c > {output.mmsplice} 2>> {log}
+            export CUDA_VISIBLE_DEVICES=0
+            export TF_FORCE_GPU_ALLOW_GROWTH=true
+
+            # Set threading environment variables for TensorFlow
+            export OMP_NUM_THREADS={threads}
+            export MKL_NUM_THREADS={threads}
+            export OPENBLAS_NUM_THREADS={threads}
+            export TF_NUM_INTRAOP_THREADS={threads}
+            export TF_NUM_INTEROP_THREADS=1
+
+            tabix -p vcf {input.vcf} &> {log}
+            KERAS_BACKEND=tensorflow python {params.cadd}/src/scripts/lib/tools/MMSplice.py \
+                -i {input.vcf} -g {input.transcripts} -f {input.reference} | \
+                grep -v '^Variant(CHROM=' | bgzip -c > {output.mmsplice} 2>> {log}
             """
 
 

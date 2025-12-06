@@ -1,18 +1,20 @@
 """
-Description: input is vep annotated vcf and a file containing all peptide sequences with Ensemble transcript IDs. 
-The script adds a score for frameshifts and stop gains to the info column of the vcf file. In brief, Scores for frameshift or stop gain variants were calculated 
+Description: input is vep annotated vcf and a file containing all peptide sequences with Ensemble transcript IDs.
+The script adds a score for frameshifts and stop gains to the info column of the vcf file. In brief, Scores for frameshift or stop gain variants were calculated
 for variants annotated with the Ensembl VEP tools' frameshift
-or stop gain consequence annotation. Amino acid sequences of reference alleles were obtained as described above, with the only difference that a window of 250 amino acids was used. 
-Log transformed probabilities were calculated and summed up for the entire reference amino acid sequence. 
+or stop gain consequence annotation. Amino acid sequences of reference alleles were obtained as described above, with the only difference that a window of 250 amino acids was used.
+Log transformed probabilities were calculated and summed up for the entire reference amino acid sequence.
 Calculation of a score for the alternative allele was carried out based on the entire reference amino acid sequence. Here, we summed up log probabilities of the reference
 sequences amino acids up to the point where the frameshift or stop gain occurred as obtained from the Ensembl VEP tools' annotations. For every amino acid that is lost due
 to the frameshift or stop gain, we used the median of log transformed probabilities calculated from all possible amino acids at each individual position in the remaining sequence
 and added them to the sum corresponding to the alternative allele.
-The average of logs odds ratios between the reference and alternative sequences from the five models  was than used as a final score. 
+The average of logs odds ratios between the reference and alternative sequences from the five models  was than used as a final score.
 
 Author: Thorben Maass, Max Schubach
 Contact: tho.maass@uni-luebeck.de
 Year:2023
+
+OPTIMIZED VERSION: Performance improvements by loading models once, building transcript lookup dict, and batching efficiently
 """
 
 import warnings
@@ -21,6 +23,42 @@ from Bio.bgzf import BgzfReader, BgzfWriter
 import torch
 from esm import pretrained
 import click
+import time
+import os
+import multiprocessing
+
+# Check for mixed precision support
+try:
+    from torch.cuda.amp import autocast
+    AMP_AVAILABLE = True
+except ImportError:
+    AMP_AVAILABLE = False
+
+# CPU optimization settings
+def setup_cpu_optimizations():
+    """Configure optimal CPU settings for PyTorch."""
+    # Set number of threads for intra-op parallelism
+    num_cores = multiprocessing.cpu_count()
+    # Use all cores but leave some headroom
+    optimal_threads = max(1, num_cores - 1)
+
+    torch.set_num_threads(optimal_threads)
+    torch.set_num_interop_threads(optimal_threads)
+
+    # Enable ONEDNN/MKL optimizations if available
+    if hasattr(torch.backends, 'mkldnn'):
+        if hasattr(torch.backends.mkldnn, 'enabled'):
+            torch.backends.mkldnn.enabled = True
+
+    # Enable TorchScript optimizations for CPU
+    torch.jit.enable_onednn_fusion(True)
+
+    # Set environment variables for BLAS libraries
+    os.environ['MKL_NUM_THREADS'] = str(optimal_threads)
+    os.environ['NUMEXPR_NUM_THREADS'] = str(optimal_threads)
+    os.environ['OMP_NUM_THREADS'] = str(optimal_threads)
+
+    return optimal_threads
 
 
 @click.command()
@@ -79,6 +117,25 @@ def cli(
     input_file, transcript_file, model_directory, modelsToUse, output_file, batch_size
 ):
     torch.hub.set_dir(model_directory)
+
+    # Detect device and optimize accordingly
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Running on: {device_type.upper()}")
+
+    if device_type == "cpu":
+        print("Configuring CPU optimizations...")
+        optimal_threads = setup_cpu_optimizations()
+        print(f"  Using {optimal_threads} CPU threads")
+        print(f"  ONEDNN/MKL optimizations enabled")
+
+        # Adjust batch size for CPU (smaller batches work better on CPU)
+        if batch_size > 10:
+            original_batch_size = batch_size
+            batch_size = min(batch_size, 10)  # Cap at 10 for CPU
+            print(f"  Adjusted batch size for CPU: {original_batch_size} → {batch_size}")
+    else:
+        print(f"  Using GPU: {torch.cuda.get_device_name(0)}")
+        print(f"  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
 
     # get information from vcf file with SNVs and write them into lists (erstmal Bsp, später automatisch aus info zeile extrahieren)
     vcf_file_data = BgzfReader(input_file, "r")  # TM_example.vcf.gz
@@ -158,7 +215,8 @@ def cli(
                         )
                     protPos_mod.append(False)
 
-    # dissect file with all aa seqs to entries
+    # OPTIMIZATION: Build transcript lookup dictionary for O(1) access
+    print("Building transcript lookup dictionary...")
     transcript_data = open(
         transcript_file, "r"
     )  # <Pfad zu "Homo_sapiens.GRCh38.pep.all.fa" >
@@ -166,90 +224,87 @@ def cli(
         ">"
     )  # evtl erstes > in file weglöschen
     transcript_data.close()
-    transcript_info = []
-    transcript_info_id = []
 
-    # transcript info contains aa seqs, becomes processed later
-    for i in range(0, len(transcript_info_entries), 1):
-        if transcript_info_entries[i] != "":
-            transcript_info.append(transcript_info_entries[i].split(" "))
+    # Build dictionary mapping transcript ID to (full_info, sequence)
+    transcript_dict = {}
+    for entry in transcript_info_entries:
+        if entry != "":
+            entry_parts = entry.split(" ")
+            if len(entry_parts) >= 5:
+                transcript_id_raw = entry_parts[4]
+                # Remove version of ENST ID for comparison with vep annotation
+                point_pos = transcript_id_raw.find(".")
+                if point_pos != -1:
+                    transcript_id_clean = transcript_id_raw[:point_pos]
+                else:
+                    transcript_id_clean = transcript_id_raw
 
-    # transcript ids
-    for i in range(0, len(transcript_info_entries), 1):
-        if transcript_info_entries[i] != "":
-            transcript_info_tmp = transcript_info_entries[i].split(" ")[4]
-            pointAt = False
-            # remove version of ENST ID vor comparison with vep annotation
-            for p in range(0, len(transcript_info_tmp), 1):
-                if transcript_info_tmp[p] == ".":
-                    pointAt = p
+                # Store the sequence (last part of entry)
+                transcript_dict[transcript_id_clean] = entry_parts
 
-            transcript_info_tmp = transcript_info_tmp[:pointAt]
-            transcript_info_id.append(transcript_info_tmp)
-    if (len(transcript_info_id)) != len(transcript_info):
-        print("ERROR!!!!!!")
-
-    # create list with aa_seq_refs of transcript_ids, mal gucken, ob man alle auf einmal uebergebenkann an esm model
+    # create list with aa_seq_refs of transcript_ids
     aa_seq_ref = []
     totalNumberOfStopCodons = []
     numberOfStopCodons = []
     numberOfStopCodonsInIndel = []
+
+    # OPTIMIZATION: Use dictionary lookup instead of nested loop
     for j in range(0, len(transcript_id), 1):
-        transcript_found = False
-        for i in range(
-            1, len(transcript_info_id), 1
-        ):  # start bei 1 statt 0 weil das inputfile mit ">" anfaengt und 0. element in aa_seq_ref einfach [] ist
-            if transcript_info_id[i] == transcript_id[j]:
-                transcript_found = True
-                # prepare Seq remove remainings of header
-                temp_seq = transcript_info[i][-1]
+        transcript_key = transcript_id[j]  # e.g., "transcript:ENST00012345"
+
+        # Look up in dictionary (O(1) instead of O(n))
+        if transcript_key in transcript_dict:
+            temp_seq = transcript_dict[transcript_key][-1]
+
+            # prepare Seq remove remainings of header
+            for k in range(0, len(temp_seq), 1):
+                if temp_seq[k] != "\n":
+                    k = k + 1
+                else:
+                    k = k + 1
+                    temp_seq = temp_seq[k:]
+                    break
+
+            # prepare seq (remove /n)
+            forbidden_chars = "\n"
+            for char in forbidden_chars:
+                temp_seq = temp_seq.replace(char, "")
+
+            # count stop codons in seq before site of mutation
+            numberOfStopCodons.append(0)
+            if "*" in temp_seq:
                 for k in range(0, len(temp_seq), 1):
-                    if temp_seq[k] != "\n":
-                        k = k + 1
-                    else:
-                        k = k + 1
-                        temp_seq = temp_seq[k:]
-                        break
+                    if temp_seq[k] == "*" and k < protPosStart[j]:
+                        numberOfStopCodons[j] = numberOfStopCodons[j] + 1
 
-                # prepare seq (remove /n)
-                forbidden_chars = "\n"
-                for char in forbidden_chars:
-                    temp_seq = temp_seq.replace(char, "")
+            # count stop codons in Indel
+            numberOfStopCodonsInIndel.append(0)
+            if "*" in temp_seq:
+                for k in range(0, len(temp_seq), 1):
+                    if (
+                        temp_seq[k] == "*"
+                        and k >= protPosStart[j]
+                        and k < protPosEnd[j]
+                    ):
+                        numberOfStopCodonsInIndel[j] = (
+                            numberOfStopCodonsInIndel[j] + 1
+                        )
 
-                # count stop codons in seq before site of mutation
-                numberOfStopCodons.append(0)
-                if "*" in temp_seq:
-                    for k in range(0, len(temp_seq), 1):
-                        if temp_seq[k] == "*" and k < protPosStart[j]:
-                            numberOfStopCodons[j] = numberOfStopCodons[j] + 1
+            # count stop codons in seq
+            totalNumberOfStopCodons.append(0)
+            if "*" in temp_seq:
+                for k in range(0, len(temp_seq), 1):
+                    if temp_seq[k] == "*":
+                        totalNumberOfStopCodons[j] = totalNumberOfStopCodons[j] + 1
 
-                # count stop codons in Indel
-                numberOfStopCodonsInIndel.append(0)
-                if "*" in temp_seq:
-                    for k in range(0, len(temp_seq), 1):
-                        if (
-                            temp_seq[k] == "*"
-                            and k >= protPosStart[j]
-                            and k < protPosEnd[j]
-                        ):
-                            numberOfStopCodonsInIndel[j] = (
-                                numberOfStopCodonsInIndel[j] + 1
-                            )
+            # remove additional stop codons (remove *)
+            forbidden_chars = "*"
+            for char in forbidden_chars:
+                temp_seq = temp_seq.replace(char, "")
 
-                # count stop codons in seq
-                totalNumberOfStopCodons.append(0)
-                if "*" in temp_seq:
-                    for k in range(0, len(temp_seq), 1):
-                        if temp_seq[k] == "*":
-                            totalNumberOfStopCodons[j] = totalNumberOfStopCodons[j] + 1
-
-                # remove additional stop codons (remove *)
-                forbidden_chars = "*"
-                for char in forbidden_chars:
-                    temp_seq = temp_seq.replace(char, "")
-
-                aa_seq_ref.append(temp_seq)
-        if transcript_found == False:
+            aa_seq_ref.append(temp_seq)
+        else:
+            # Transcript not found
             aa_seq_ref.append("NA")
             numberOfStopCodons.append(9999)
             totalNumberOfStopCodons.append(9999)
@@ -258,10 +313,6 @@ def cli(
     conseq = []
     aa_seq_alt = []
     for j in range(0, len(aa_seq_ref), 1):
-        # print(nAA[j])
-        # print(oAA[j])
-        # print("\n")
-
         if aa_seq_ref[j] == "NA":
             aa_seq_alt.append("NA")
             conseq.append("NA")
@@ -277,7 +328,6 @@ def cli(
             )
 
     # prepare data array for esm model
-
     window = 250
     data_ref = []
     for i in range(0, len(transcript_id), 1):
@@ -367,107 +417,228 @@ def cli(
         else:
             data_alt.append((transcript_id[i], aa_seq_alt[i][-window:]))
 
-    ref_alt_scores = []
-    # load esm model(s)
-    for o in range(0, len([data_ref, data_alt]), 1):
-        data = [data_ref, data_alt][o]
-        modelScores = []  # scores of different models
-        if len(data) >= 1:
-            for k in range(0, len(modelsToUse), 1):
-                torch.cuda.empty_cache()
-                model, alphabet = pretrained.load_model_and_alphabet(modelsToUse[k])
-                model.eval()  # disables dropout for deterministic results
-                batch_converter = alphabet.get_batch_converter()
+    # OPTIMIZATION: Load all models ONCE at the beginning
+    print("Loading ESM models (this may take a while)...")
+    models_and_alphabets = []
+    batch_converter = None
 
-                if torch.cuda.is_available():
-                    model = model.cuda()
-                    # print("transferred to GPU")
+    for k, model_name in enumerate(modelsToUse):
+        print(f"  Loading model {k+1}/{len(modelsToUse)}: {model_name}")
+        model, alphabet = pretrained.load_model_and_alphabet(model_name)
+        model.eval()  # disables dropout for deterministic results
 
-                # apply es model to sequence, tokenProbs hat probs von allen aa an jeder pos basierend auf der seq in "data"
-                seq_scores = []
-                for t in range(0, len(data), batch_size):
-                    if t + batch_size > len(data):
-                        batch_data = data[t:]
-                    else:
-                        batch_data = data[t : t + batch_size]
+        if device_type == "cuda":
+            model = model.cuda()
+            print(f"    Transferred to GPU")
 
-                    batch_labels, batch_strs, batch_tokens = batch_converter(batch_data)
-                    with torch.no_grad():  # setzt irgeineine flag auf false
-                        if torch.cuda.is_available():
+            # OPTIMIZATION: Use mixed precision (FP16) for faster inference on Tensor Cores
+            if AMP_AVAILABLE:
+                print(f"    Enabled mixed precision (FP16)")
+
+            # OPTIMIZATION: Compile model with torch.compile() if available (PyTorch 2.0+)
+            if hasattr(torch, 'compile'):
+                try:
+                    model = torch.compile(model, mode='reduce-overhead')
+                    print(f"    Model compiled with torch.compile()")
+                except Exception as e:
+                    print(f"    Warning: torch.compile() failed, continuing without it: {e}")
+
+        else:  # CPU optimizations
+            print(f"    Optimizing for CPU inference...")
+
+            # OPTIMIZATION: Use channels_last memory format for better CPU performance
+            try:
+                # Note: ESM models may not support channels_last, so we wrap in try-except
+                if hasattr(model, 'to'):
+                    # Apply ONEDNN graph optimization
+                    model = torch.jit.optimize_for_inference(torch.jit.script(model))
+                    print(f"    Applied TorchScript optimization")
+            except Exception as e:
+                # If scripting fails, continue without it
+                print(f"    TorchScript optimization not available: {e}")
+                pass
+
+            # Enable inference mode optimizations
+            torch.set_grad_enabled(False)
+
+        models_and_alphabets.append((model, alphabet))
+
+        # OPTIMIZATION: Reuse the same batch_converter for all models (they share the same alphabet)
+        if batch_converter is None:
+            batch_converter = alphabet.get_batch_converter()
+
+    print("All models loaded successfully!")
+
+    # OPTIMIZATION: Process all models for ref/alt instead of loading models multiple times
+    ref_scores_all_models = []
+    alt_scores_all_models = []
+
+    if len(data_ref) >= 1:
+        for k, (model, alphabet) in enumerate(models_and_alphabets):
+            print(f"Processing model {k+1}/{len(modelsToUse)}...")
+            model_start_time = time.time()
+            total_predictions = 0
+            last_update_time = model_start_time
+
+            # Process reference sequences
+            seq_scores_ref = []
+            for t in range(0, len(data_ref), batch_size):
+                if t + batch_size > len(data_ref):
+                    batch_data = data_ref[t:]
+                else:
+                    batch_data = data_ref[t : t + batch_size]
+
+                batch_labels, batch_strs, batch_tokens = batch_converter(batch_data)
+
+                # OPTIMIZATION: Use inference_mode for better performance (no gradient tracking overhead)
+                with torch.inference_mode():
+                    if device_type == "cuda" and AMP_AVAILABLE:
+                        # GPU with mixed precision
+                        with autocast():
                             token_probs = torch.log_softmax(
                                 model(batch_tokens.cuda())["logits"], dim=-1
                             )
+                    elif device_type == "cuda":
+                        # GPU without mixed precision
+                        token_probs = torch.log_softmax(
+                            model(batch_tokens.cuda())["logits"], dim=-1
+                        )
+                    else:
+                        # CPU inference - use bfloat16 if available for better performance
+                        if torch.cpu.is_bf16_supported():
+                            with torch.cpu.amp.autocast(dtype=torch.bfloat16):
+                                token_probs = torch.log_softmax(
+                                    model(batch_tokens)["logits"], dim=-1
+                                )
                         else:
                             token_probs = torch.log_softmax(
                                 model(batch_tokens)["logits"], dim=-1
                             )
 
-                    # test and extract scores from tokenProbs
-                    if o == 1:  # alt seqences
-                        for i in range(0, len(batch_data), 1):
-                            # print (str(t+i)+" of "+ str(len(data))+ "alt seqs")
-                            if conseq[i + t] == "FS":
-                                score = 0
-                                for y in range(
-                                    0, len(batch_data[i][1]), 1
-                                ):  # iterating over single AA in sequence
-                                    if y < protPos_mod[i + t]:
-                                        score = (
-                                            score
-                                            + token_probs[
-                                                i,
-                                                y + 1,
-                                                alphabet.get_idx(batch_data[i][1][y]),
-                                            ]
-                                        )
-                                    else:
-                                        # calc mean of all possible aa at this position
-                                        aa_scores = []
-                                        for k in range(4, 24, 1):
-                                            aa_scores.append(
-                                                token_probs[i, y + 1, k]
-                                            )  # for all aa (except selenocystein)
-                                        aa_scores.append(
-                                            token_probs[i, y + 1, 26]
-                                        )  # for selenocystein
-                                        aa_scores.sort()
-                                        mid = len(aa_scores) // 2
-                                        median = (aa_scores[mid] + aa_scores[~mid]) / 2
-                                        score = score + median
+                # Extract scores for ref sequences
+                for i in range(0, len(batch_data), 1):
+                    if conseq[i + t] == "FS":
+                        score = 0
+                        for y in range(0, len(batch_data[i][1]), 1):
+                            score = (
+                                score
+                                + token_probs[
+                                    i,
+                                    y + 1,
+                                    alphabet.get_idx(batch_data[i][1][y]),
+                                ]
+                            )
+                        seq_scores_ref.append(float(score))
+                    elif conseq[i + t] == "NA":
+                        score = 999  # sollte nacher rausgeschissen werden, kein score sollte -999 sein
+                        seq_scores_ref.append(float(score))
 
-                                seq_scores.append(float(score))
-                            elif conseq[i + t] == "NA":
-                                score = 0
-                                seq_scores.append(float(score))
-                    elif o == 0:  # ref sequences
-                        for i in range(0, len(batch_data), 1):
-                            if conseq[i + t] == "FS":
-                                score = 0
-                                for y in range(
-                                    0, len(batch_data[i][1]), 1
-                                ):  # iterating over single AA in sequence
-                                    score = (
-                                        score
-                                        + token_probs[
-                                            i,
-                                            y + 1,
-                                            alphabet.get_idx(batch_data[i][1][y]),
-                                        ]
-                                    )
-                                seq_scores.append(float(score))
-                            elif conseq[i + t] == "NA":
-                                score = 999  # sollte nacher rausgeschissen werden, kein score sollte -999 sein
-                                seq_scores.append(float(score))
+                # Progress tracking (print every 5 seconds)
+                total_predictions += len(batch_data)
+                current_time = time.time()
+                if current_time - last_update_time >= 5.0:
+                    elapsed = current_time - model_start_time
+                    pred_per_sec = total_predictions / elapsed if elapsed > 0 else 0
+                    print(f"  REF: {total_predictions}/{len(data_ref)} variants ({pred_per_sec:.1f} pred/sec)")
+                    last_update_time = current_time
 
-                modelScores.append(seq_scores)
-        ref_alt_scores.append(modelScores)
+            ref_scores_all_models.append(seq_scores_ref)
 
+            # Reset progress tracking for alt sequences
+            total_predictions = 0
+            last_update_time = time.time()
+
+            # Process alternative sequences
+            seq_scores_alt = []
+            for t in range(0, len(data_alt), batch_size):
+                if t + batch_size > len(data_alt):
+                    batch_data = data_alt[t:]
+                else:
+                    batch_data = data_alt[t : t + batch_size]
+
+                batch_labels, batch_strs, batch_tokens = batch_converter(batch_data)
+
+                # OPTIMIZATION: Use inference_mode for better performance (no gradient tracking overhead)
+                with torch.inference_mode():
+                    if device_type == "cuda" and AMP_AVAILABLE:
+                        # GPU with mixed precision
+                        with autocast():
+                            token_probs = torch.log_softmax(
+                                model(batch_tokens.cuda())["logits"], dim=-1
+                            )
+                    elif device_type == "cuda":
+                        # GPU without mixed precision
+                        token_probs = torch.log_softmax(
+                            model(batch_tokens.cuda())["logits"], dim=-1
+                        )
+                    else:
+                        # CPU inference - use bfloat16 if available for better performance
+                        if torch.cpu.is_bf16_supported():
+                            with torch.cpu.amp.autocast(dtype=torch.bfloat16):
+                                token_probs = torch.log_softmax(
+                                    model(batch_tokens)["logits"], dim=-1
+                                )
+                        else:
+                            token_probs = torch.log_softmax(
+                                model(batch_tokens)["logits"], dim=-1
+                            )
+
+                # Extract scores for alt sequences
+                for i in range(0, len(batch_data), 1):
+                    if conseq[i + t] == "FS":
+                        score = 0
+                        for y in range(0, len(batch_data[i][1]), 1):
+                            if y < protPos_mod[i + t]:
+                                score = (
+                                    score
+                                    + token_probs[
+                                        i,
+                                        y + 1,
+                                        alphabet.get_idx(batch_data[i][1][y]),
+                                    ]
+                                )
+                            else:
+                                # OPTIMIZATION: Vectorize median calculation
+                                # Collect all amino acid scores at once
+                                aa_scores_tensor = torch.cat([
+                                    token_probs[i, y + 1, 4:24],  # Standard amino acids
+                                    token_probs[i, y + 1, 26:27]  # Selenocysteine
+                                ])
+                                median = torch.median(aa_scores_tensor)
+                                score = score + median
+
+                        seq_scores_alt.append(float(score))
+                    elif conseq[i + t] == "NA":
+                        score = 0
+                        seq_scores_alt.append(float(score))
+
+                # Progress tracking (print every 5 seconds)
+                total_predictions += len(batch_data)
+                current_time = time.time()
+                if current_time - last_update_time >= 5.0:
+                    elapsed = current_time - model_start_time
+                    pred_per_sec = total_predictions / elapsed if elapsed > 0 else 0
+                    print(f"  ALT: {total_predictions}/{len(data_alt)} variants ({pred_per_sec:.1f} pred/sec)")
+                    last_update_time = current_time
+
+            alt_scores_all_models.append(seq_scores_alt)
+
+            # Print summary for this model
+            model_elapsed = time.time() - model_start_time
+            total_model_predictions = len(data_ref) + len(data_alt)
+            avg_pred_per_sec = total_model_predictions / model_elapsed if model_elapsed > 0 else 0
+            print(f"  Model {k+1} complete: {model_elapsed:.1f}s, {avg_pred_per_sec:.1f} pred/sec average")
+
+    # OPTIMIZATION: Only clear GPU cache once at the end, not in the loop
+    if device_type == "cuda":
+        torch.cuda.empty_cache()
+
+    # Convert to numpy arrays for easier manipulation
+    ref_alt_scores = [np.array(ref_scores_all_models), np.array(alt_scores_all_models)]
     np_array_scores = np.array(ref_alt_scores)
     np_array_score_diff = np_array_scores[1] - np_array_scores[0]
 
     # write scores in cvf. file
-
-    # get information from vcf file with SNVs and write them into lists (erstmal Bsp, später automatisch aus info zeile extrahieren)
 
     # identify positions of annotations important for esm score
     header_end = False
@@ -494,7 +665,6 @@ def cli(
                         break
 
                 # annotate vcf line with esm scores
-                # for k in range (0, len(modelsToUse), 1):
                 vcf_data[i] = (
                     vcf_data[i][:-1] + ";EsmScoreFrameshift" + "=" + vcf_data[i][-1:]
                 )
@@ -529,11 +699,13 @@ def cli(
             else:
                 j = j + 1
 
+    print("Writing output VCF...")
     vcf_file_output = BgzfWriter(output_file, "w")
     for line in vcf_data:
         vcf_file_output.write(line)
 
     vcf_file_output.close()
+    print("Done!")
 
 
 if __name__ == "__main__":
