@@ -155,14 +155,14 @@ rule annotation_vep_batch:
         mem=8000,
         time=180,
         A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        p=config.get("SLURM_PARTITION", "pq"),
     shell:
         "cat {input.vcf} | "
         "vep --quiet --cache --offline --dir {input.veppath} "
-        "--buffer 1000 --no_stats --species homo_sapiens "
+        "--buffer 10000 --no_stats --species homo_sapiens "
         "--db_version={params.ensembl_db} --assembly {params.genome_build} "
         "--format vcf --regulatory --sift b --polyphen b --per_gene --ccds --domains "
-        "--numbers --canonical --total_length --vcf --force_overwrite --output_file STDOUT | "
+        "--numbers --canonical --total_length --fork 2 --vcf --force_overwrite --output_file STDOUT | "
         "bgzip -c > {output} 2> {log}"
 
 
@@ -277,7 +277,6 @@ if config["GenomeBuild"] == "GRCh38":
             p=config.get("SLURM_PARTITION", "normal"),
         shell:
             """
-            # Enable GPU for TensorFlow (MMSplice) - Note: TF 1.1.0 is very old
             export CUDA_VISIBLE_DEVICES=0
             export TF_FORCE_GPU_ALLOW_GROWTH=true
 
