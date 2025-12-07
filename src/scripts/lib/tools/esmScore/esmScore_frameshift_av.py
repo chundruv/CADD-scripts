@@ -504,16 +504,10 @@ def cli(
                             model(batch_tokens.cuda())["logits"], dim=-1
                         )
                     else:
-                        # CPU inference - use bfloat16 if available for better performance
-                        if torch.cpu.is_bf16_supported():
-                            with torch.cpu.amp.autocast(dtype=torch.bfloat16):
-                                token_probs = torch.log_softmax(
-                                    model(batch_tokens)["logits"], dim=-1
-                                )
-                        else:
-                            token_probs = torch.log_softmax(
-                                model(batch_tokens)["logits"], dim=-1
-                            )
+                        # CPU inference
+                        token_probs = torch.log_softmax(
+                            model(batch_tokens)["logits"], dim=-1
+                        )
 
                 # Extract scores for ref sequences
                 for i in range(0, len(batch_data), 1):
@@ -572,16 +566,10 @@ def cli(
                             model(batch_tokens.cuda())["logits"], dim=-1
                         )
                     else:
-                        # CPU inference - use bfloat16 if available for better performance
-                        if torch.cpu.is_bf16_supported():
-                            with torch.cpu.amp.autocast(dtype=torch.bfloat16):
-                                token_probs = torch.log_softmax(
-                                    model(batch_tokens)["logits"], dim=-1
-                                )
-                        else:
-                            token_probs = torch.log_softmax(
-                                model(batch_tokens)["logits"], dim=-1
-                            )
+                        # CPU inference
+                        token_probs = torch.log_softmax(
+                            model(batch_tokens)["logits"], dim=-1
+                        )
 
                 # Extract scores for alt sequences
                 for i in range(0, len(batch_data), 1):
