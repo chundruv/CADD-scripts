@@ -205,6 +205,7 @@ def cli(
     import vcfpy
     import copy
     import time
+    from collections import OrderedDict
 
     import tensorflow as tf
     from seqiolib import Interval, Encoder, VariantType, Variant
@@ -425,7 +426,7 @@ def cli(
 
     for task_id in range(num_targets):
         vcf_reader.header.add_info_line(
-            vcfpy.OrderedDict(
+            OrderedDict(
                 [
                     ("ID", "RegSeq%d" % task_id),
                     ("Number", "A"),
