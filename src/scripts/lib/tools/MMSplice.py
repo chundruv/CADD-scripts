@@ -3,13 +3,13 @@
 """
 MMSplice prediction script for splice site analysis.
 
-OPTIMIZED VERSION: TensorFlow 2 compatibility, GPU/CPU auto-detection,
+OPTIMIZED VERSION: TensorFlow 2/Keras 3 compatibility, GPU/CPU auto-detection,
 mixed precision support, batch optimization, and caching for better performance.
+Native DNA encoding (no concise dependency for Keras 3 compatibility).
 """
 
 # Import
 from tqdm import tqdm
-from concise.preprocessing import encodeDNA
 from mmsplice.vcf_dataloader import SplicingVCFDataloader
 from mmsplice import MMSplice
 from mmsplice.utils import logit, predict_deltaLogitPsi, \
@@ -22,6 +22,49 @@ import sys
 import gzip
 import time
 import os
+
+
+# Native DNA encoding function (replaces concise.preprocessing.encodeDNA)
+# This is needed for Keras 3 / TensorFlow 2.x compatibility
+def encodeDNA(sequences):
+    """
+    One-hot encode DNA sequences.
+
+    Args:
+        sequences: List of DNA sequences (strings or arrays of strings)
+
+    Returns:
+        numpy array of shape (n_sequences, sequence_length, 4)
+        where the last dimension is one-hot encoding for A, C, G, T
+    """
+    # DNA nucleotide to index mapping
+    nuc_to_idx = {'A': 0, 'C': 1, 'G': 2, 'T': 3,
+                  'a': 0, 'c': 1, 'g': 2, 't': 3,
+                  'N': -1, 'n': -1}  # N = unknown, will be all zeros
+
+    # Convert to list if single sequence
+    if isinstance(sequences, str):
+        sequences = [sequences]
+
+    # Convert numpy array elements to strings if needed
+    sequences = [str(seq) for seq in sequences]
+
+    # Get dimensions
+    n_sequences = len(sequences)
+    seq_length = len(sequences[0])
+
+    # Initialize output array
+    encoded = np.zeros((n_sequences, seq_length, 4), dtype=np.float32)
+
+    # Encode each sequence
+    for i, seq in enumerate(sequences):
+        for j, nucleotide in enumerate(seq):
+            idx = nuc_to_idx.get(nucleotide, -1)
+            if idx >= 0:  # Valid nucleotide
+                encoded[i, j, idx] = 1.0
+            # If idx is -1 (unknown), leave as all zeros
+
+    return encoded
 
 # TensorFlow 2 imports and configuration
 try:
