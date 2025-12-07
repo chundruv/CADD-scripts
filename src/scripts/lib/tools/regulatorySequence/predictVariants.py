@@ -89,11 +89,37 @@ def load_model_tf2(model_file, weights_file):
         with open(model_file, 'r') as f:
             model_json = f.read()
 
-        # Use TF2 compatible model loading
-        # model_from_json is deprecated, so we use the new approach
-        from tensorflow.keras.models import model_from_json
-        model = model_from_json(model_json)
-        print("  Loaded architecture from JSON")
+        # Parse the JSON to check the Keras version
+        config = json.loads(model_json)
+        keras_version = config.get('keras_version', 'unknown')
+        print(f"  Detected Keras version: {keras_version}")
+
+        # Use legacy model loading for old Keras 2.x models
+        # TF 2.x includes backward compatibility for Keras 2.x through the legacy module
+        try:
+            # Try using the legacy save/load APIs
+            if hasattr(tf.keras.saving, 'legacy'):
+                from tensorflow.keras.saving.legacy import model_from_json
+                print("  Using legacy model_from_json (TF2 backward compatibility)")
+            else:
+                from tensorflow.keras.models import model_from_json
+                print("  Using model_from_json")
+
+            model = model_from_json(model_json)
+            print("  Loaded architecture from JSON")
+
+        except Exception as json_error:
+            # If direct JSON loading fails, try using the legacy deserialization
+            print(f"  Direct JSON loading failed: {json_error}")
+            print("  Attempting legacy deserialization...")
+
+            # Use TF2's legacy serialization utilities
+            from tensorflow.keras.utils import deserialize_keras_object
+            from tensorflow.python.keras.saving import model_config as model_config_lib
+
+            # Try to deserialize using TF2's internal methods
+            model = model_config_lib.model_from_config(config['config'])
+            print("  Loaded architecture using legacy deserialization")
 
         # Load weights
         if weights_file:
@@ -102,8 +128,13 @@ def load_model_tf2(model_file, weights_file):
             print("  Weights loaded successfully")
 
         return model
+
     except Exception as e:
         print(f"  Error loading JSON model: {e}")
+        print("\nTroubleshooting:")
+        print("  - The model was saved with an older Keras version (2.3.0-tf)")
+        print("  - TensorFlow 2.x has limited backward compatibility")
+        print("  - Try re-saving the model in TensorFlow 2.x format if possible")
         raise RuntimeError(f"Could not load model from {model_file}") from e
 
 
