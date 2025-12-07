@@ -253,8 +253,27 @@ def predict_batch_fast(model, dataloader, batch_size=512, progress=True,
         ref_pred = pd.DataFrame(X_ref, columns=ref_cols)
         alt_pred = pd.DataFrame(X_alt, columns=alt_cols)
 
+        # Try to get variant ID - handle different metadata structures
+        try:
+            variant_id = batch['metadata']['variant']['STR']
+        except (KeyError, TypeError):
+            # Fallback: try alternative keys or construct from available data
+            try:
+                variant_id = batch['metadata']['variant']['id']
+            except (KeyError, TypeError):
+                try:
+                    # Another fallback: construct from variant info
+                    var_meta = batch['metadata']['variant']
+                    if isinstance(var_meta, dict):
+                        variant_id = str(var_meta)
+                    else:
+                        variant_id = var_meta
+                except:
+                    # Last resort: use index
+                    variant_id = list(range(len(batch['inputs']['seq']['exon'])))
+
         df = pd.DataFrame({
-            'ID': batch['metadata']['variant']['STR'],
+            'ID': variant_id,
             'exons': batch['metadata']['exon']['annotation'],
         })
         for k in ['exon_id', 'gene_id', 'gene_name', 'transcript_id']:
