@@ -295,7 +295,12 @@ def predict_batch_fast(model, dataloader, batch_size=512, progress=True,
                         # Stack all encoded sequences for batch prediction
                         if encoded_list:
                             encoded = np.array(encoded_list)
-                            prediction = model_eval(encoded).flatten()
+                            # Convert TensorFlow tensor to numpy if needed (for tf.function compatibility)
+                            pred_result = model_eval(encoded)
+                            if hasattr(pred_result, 'numpy'):
+                                prediction = pred_result.numpy().flatten()
+                            else:
+                                prediction = pred_result.flatten()
                             new_predictions = {s: p for s, p in zip(uncached_seqs, prediction)}
 
                             # Update prediction cache
@@ -311,7 +316,12 @@ def predict_batch_fast(model, dataloader, batch_size=512, progress=True,
                 else:
                     # No caching
                     encoded = encodeDNA(sequences)
-                    prediction = model_eval(encoded).flatten()
+                    # Convert TensorFlow tensor to numpy if needed (for tf.function compatibility)
+                    pred_result = model_eval(encoded)
+                    if hasattr(pred_result, 'numpy'):
+                        prediction = pred_result.numpy().flatten()
+                    else:
+                        prediction = pred_result.flatten()
                     pred_dict = {s: p for s, p in zip(sequences, prediction)}
 
                 # OPTIMIZATION: Vectorized lookup using numpy (2-5x faster than list comprehensions)
