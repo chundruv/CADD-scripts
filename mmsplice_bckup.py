@@ -1,5 +1,3 @@
-#!/bin/env python3
-
 """
 MMSplice prediction script for splice site analysis.
 
@@ -26,13 +24,9 @@ import os
 
 # Native DNA encoding function (replaces concise.preprocessing.encodeDNA)
 # This is needed for Keras 3 / TensorFlow 2.x compatibility
-# OPTIMIZED: Vectorized version - 10-100x faster than nested loops
 def encodeDNA(sequences):
     """
-    Vectorized one-hot DNA encoding for massive CPU speedup.
-
-    Uses NumPy vectorized operations instead of Python loops for 10-100x speedup.
-    Works efficiently on CPU via BLAS/MKL optimizations.
+    One-hot encode DNA sequences.
 
     Handles variable-length sequences by checking lengths first.
 
@@ -43,12 +37,17 @@ def encodeDNA(sequences):
         numpy array of shape (n_sequences, sequence_length, 4)
         where the last dimension is one-hot encoding for A, C, G, T
     """
+    # DNA nucleotide to index mapping
+    nuc_to_idx = {'A': 0, 'C': 1, 'G': 2, 'T': 3,
+                  'a': 0, 'c': 1, 'g': 2, 't': 3,
+                  'N': -1, 'n': -1}  # N = unknown, will be all zeros
+
     # Convert to list if single sequence
     if isinstance(sequences, str):
         sequences = [sequences]
 
-    # Convert numpy array elements to strings and uppercase for consistency
-    sequences = [str(seq).upper() for seq in sequences]
+    # Convert numpy array elements to strings if needed
+    sequences = [str(seq) for seq in sequences]
 
     # Get dimensions
     n_sequences = len(sequences)
@@ -57,40 +56,26 @@ def encodeDNA(sequences):
 
     # Check if all sequences have the same length
     seq_lengths = [len(seq) for seq in sequences]
-    if len(set(seq_lengths)) == 1:
-        # All sequences same length - use fast vectorized path
-        seq_length = seq_lengths[0]
 
-        # OPTIMIZATION: Convert to numpy character array (vectorized)
-        # This is much faster than nested Python loops
-        seq_array = np.array([list(seq) for seq in sequences])
+    # Use the maximum length to handle variable-length sequences
+    seq_length = max(seq_lengths)
 
-        # OPTIMIZATION: Vectorized one-hot encoding using NumPy broadcasting
-        # Each comparison creates a boolean array, converted to float32
-        # This is 10-100x faster than the original nested loop approach
-        encoded = np.zeros((n_sequences, seq_length, 4), dtype=np.float32)
-        encoded[:, :, 0] = (seq_array == 'A').astype(np.float32)
-        encoded[:, :, 1] = (seq_array == 'C').astype(np.float32)
-        encoded[:, :, 2] = (seq_array == 'G').astype(np.float32)
-        encoded[:, :, 3] = (seq_array == 'T').astype(np.float32)
-    else:
-        # Variable length sequences - encode each individually
-        # This is slower but handles edge cases correctly
-        max_length = max(seq_lengths)
+    # Warn if sequences have different lengths
+    if len(set(seq_lengths)) > 1:
         min_length = min(seq_lengths)
         if n_sequences <= 10:  # Only print for small batches to avoid spam
-            print(f"  Warning: Variable-length sequences detected ({min_length}-{max_length} bp, n={n_sequences}), using slower encoding")
+            print(f"  Warning: Variable-length sequences detected ({min_length}-{seq_length} bp, n={n_sequences})")
 
-        encoded = np.zeros((n_sequences, max_length, 4), dtype=np.float32)
+    # Initialize output array with max length
+    encoded = np.zeros((n_sequences, seq_length, 4), dtype=np.float32)
 
-        nuc_to_idx = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
-        for i, seq in enumerate(sequences):
-            for j, nucleotide in enumerate(seq):
-                idx = nuc_to_idx.get(nucleotide, -1)
-                if idx >= 0:
-                    encoded[i, j, idx] = 1.0
-
-    # Note: Unknown nucleotides (N, etc.) remain as all zeros
+    # Encode each sequence
+    for i, seq in enumerate(sequences):
+        for j, nucleotide in enumerate(seq):
+            idx = nuc_to_idx.get(nucleotide, -1)
+            if idx >= 0:  # Valid nucleotide
+                encoded[i, j, idx] = 1.0
+            # If idx is -1 (unknown), leave as all zeros
 
     return encoded
 
@@ -199,77 +184,19 @@ def predict_batch_fast(model, dataloader, batch_size=512, progress=True,
 
     cat_list = ['acceptor_intron', 'acceptor', 'exon', 'donor', 'donor_intron']
 
-    # OPTIMIZATION: Create compiled prediction functions for better CPU/GPU performance
-    def create_compiled_predictors(model, use_tf_function=True):
-        """
-        Create optimized predictors with TensorFlow graph compilation.
+    # OPTIMIZATION: Define model evaluation functions with better predict API usage
+    # Use verbose=0 to suppress TF2 output and batch predictions more efficiently
+    cats = {'acceptor_intron': lambda x: model.acceptor_intronM.predict(x, verbose=0),
+            'acceptor': lambda x: logit(model.acceptorM.predict(x, verbose=0)),
+            'exon': lambda x: model.exonM.predict(x, verbose=0),
+            'donor': lambda x: logit(model.donorM.predict(x, verbose=0)),
+            'donor_intron': lambda x: model.donor_intronM.predict(x, verbose=0)}
 
-        Provides 1.2-1.5x speedup on CPU, 1.5-2x on GPU through:
-        - Graph optimization and compilation
-        - Reduced Python overhead
-        - Better CPU thread utilization
-
-        Works on both CPU and GPU with graceful fallback.
-        """
-        if use_tf_function and TF_AVAILABLE:
-            try:
-                # Try to compile with tf.function for better performance
-                @tf.function(reduce_retracing=True)
-                def predict_acceptor_intron(x):
-                    return model.acceptor_intronM(x, training=False)
-
-                @tf.function(reduce_retracing=True)
-                def predict_acceptor(x):
-                    return model.acceptorM(x, training=False)
-
-                @tf.function(reduce_retracing=True)
-                def predict_exon(x):
-                    return model.exonM(x, training=False)
-
-                @tf.function(reduce_retracing=True)
-                def predict_donor(x):
-                    return model.donorM(x, training=False)
-
-                @tf.function(reduce_retracing=True)
-                def predict_donor_intron(x):
-                    return model.donor_intronM(x, training=False)
-
-                print("  TensorFlow graph compilation enabled (CPU optimized)")
-
-                return {
-                    'acceptor_intron': lambda x: predict_acceptor_intron(x),
-                    'acceptor': lambda x: logit(predict_acceptor(x)),
-                    'exon': lambda x: predict_exon(x),
-                    'donor': lambda x: logit(predict_donor(x)),
-                    'donor_intron': lambda x: predict_donor_intron(x)
-                }
-            except Exception as e:
-                print(f"  tf.function compilation failed, using eager mode: {e}")
-                use_tf_function = False
-
-        # Fallback to regular predictions (eager mode)
-        if not use_tf_function or not TF_AVAILABLE:
-            return {
-                'acceptor_intron': lambda x: model.acceptor_intronM.predict(x, verbose=0),
-                'acceptor': lambda x: logit(model.acceptorM.predict(x, verbose=0)),
-                'exon': lambda x: model.exonM.predict(x, verbose=0),
-                'donor': lambda x: logit(model.donorM.predict(x, verbose=0)),
-                'donor_intron': lambda x: model.donor_intronM.predict(x, verbose=0)
-            }
-
-    # Create optimized prediction functions
-    cats = create_compiled_predictors(model, use_tf_function=True)
-
-    # OPTIMIZATION: Dual-level cache for better performance
-    # 1. encoding_cache: Cache encoded DNA sequences (shared across all categories)
-    # 2. global_cache: Cache model predictions (per category)
-    # This provides 2-3x speedup for datasets with duplicate sequences
+    # OPTIMIZATION: Global cache for sequence predictions across batches
     if use_cache:
         global_cache = {cat: {} for cat in cat_list}
-        encoding_cache = {}  # Shared encoding cache across all categories
     else:
         global_cache = None
-        encoding_cache = None
 
     for batch in dt_iter:
         refs, alts = {}, {}
@@ -278,14 +205,13 @@ def predict_batch_fast(model, dataloader, batch_size=512, progress=True,
             alterations = batch['inputs']['seq'][cat] != \
                           batch['inputs']['mut_seq'][cat]
             if np.any(alterations):
-                # OPTIMIZATION: Get unique sequences efficiently
-                # Combine and deduplicate in one step to avoid intermediate lists
-                seq_arr = batch['inputs']['seq'][cat][alterations]
-                mut_seq_arr = batch['inputs']['mut_seq'][cat][alterations]
+                # OPTIMIZATION: Get unique sequences and check cache
+                seq_list = list(batch['inputs']['seq'][cat][alterations])
+                mut_seq_list = list(batch['inputs']['mut_seq'][cat][alterations])
+                all_seqs = seq_list + mut_seq_list
 
-                # OPTIMIZATION: Use set comprehension for faster deduplication
-                # Avoid creating intermediate lists - directly create set then convert to list
-                sequences = list({str(s) for s in seq_arr} | {str(s) for s in mut_seq_arr})
+                # Convert to strings and get unique sequences
+                sequences = list(set([str(s) for s in all_seqs]))
 
                 # OPTIMIZATION: Check cache for already computed sequences
                 if use_cache and global_cache is not None:
@@ -293,77 +219,33 @@ def predict_batch_fast(model, dataloader, batch_size=512, progress=True,
                     uncached_seqs = [s for s in sequences if s not in global_cache[cat]]
 
                     if uncached_seqs:
-                        # OPTIMIZATION: Check encoding cache to avoid re-encoding
-                        # This provides 2-3x speedup for duplicate sequences
-                        encoded_list = []
-                        need_encoding = []
+                        # Only predict for uncached sequences
+                        encoded = encodeDNA(uncached_seqs)
+                        prediction = model_eval(encoded).flatten()
+                        new_predictions = {s: p for s, p in zip(uncached_seqs, prediction)}
 
-                        for seq in uncached_seqs:
-                            if seq in encoding_cache:
-                                # Sequence already encoded
-                                encoded_list.append(encoding_cache[seq])
-                            else:
-                                # Need to encode this sequence
-                                need_encoding.append(seq)
+                        # Update cache
+                        global_cache[cat].update(new_predictions)
 
-                        # Encode only sequences not in cache
-                        if need_encoding:
-                            newly_encoded = encodeDNA(need_encoding)
-                            # Cache the newly encoded sequences
-                            for seq, enc in zip(need_encoding, newly_encoded):
-                                encoding_cache[seq] = enc
-                                encoded_list.append(enc)
-
-                        # Stack all encoded sequences for batch prediction
-                        if encoded_list:
-                            encoded = np.array(encoded_list)
-                            # Convert TensorFlow tensor to numpy if needed (for tf.function compatibility)
-                            pred_result = model_eval(encoded)
-                            if hasattr(pred_result, 'numpy'):
-                                prediction = pred_result.numpy().flatten()
-                            else:
-                                prediction = pred_result.flatten()
-                            new_predictions = {s: p for s, p in zip(uncached_seqs, prediction)}
-
-                            # Update prediction cache
-                            global_cache[cat].update(new_predictions)
-
-                            # Combine cached and new predictions
-                            pred_dict = {**cached_seqs, **new_predictions}
-                        else:
-                            pred_dict = cached_seqs
+                        # Combine cached and new predictions
+                        pred_dict = {**cached_seqs, **new_predictions}
                     else:
                         # All sequences were cached
                         pred_dict = cached_seqs
                 else:
                     # No caching
                     encoded = encodeDNA(sequences)
-                    # Convert TensorFlow tensor to numpy if needed (for tf.function compatibility)
-                    pred_result = model_eval(encoded)
-                    if hasattr(pred_result, 'numpy'):
-                        prediction = pred_result.numpy().flatten()
-                    else:
-                        prediction = pred_result.flatten()
+                    prediction = model_eval(encoded).flatten()
                     pred_dict = {s: p for s, p in zip(sequences, prediction)}
 
-                # OPTIMIZATION: Vectorized lookup using numpy (2-5x faster than list comprehensions)
-                # Extract sequences for altered positions
-                seq_keys = batch['inputs']['seq'][cat][alterations]
-                mut_seq_keys = batch['inputs']['mut_seq'][cat][alterations]
-
-                # Vectorized lookup - much faster than list comprehension
-                refs_altered = np.array([pred_dict[str(s)] for s in seq_keys], dtype=np.float32)
-                alts_altered = np.array([pred_dict[str(s)] for s in mut_seq_keys], dtype=np.float32)
-
-                # Create full arrays with zeros for non-alterations (vectorized)
-                refs[cat] = np.zeros(len(alterations), dtype=np.float32)
-                alts[cat] = np.zeros(len(alterations), dtype=np.float32)
-                refs[cat][alterations] = refs_altered
-                alts[cat][alterations] = alts_altered
+                # OPTIMIZATION: Vectorized lookup using numpy
+                refs[cat] = [pred_dict[batch['inputs']['seq'][cat][i]]
+                            if a else 0 for i, a in enumerate(alterations)]
+                alts[cat] = [pred_dict[batch['inputs']['mut_seq'][cat][i]]
+                            if a else 0 for i, a in enumerate(alterations)]
             else:
-                # Vectorized zeros array
-                refs[cat] = np.zeros(len(alterations), dtype=np.float32)
-                alts[cat] = np.zeros(len(alterations), dtype=np.float32)
+                refs[cat] = [0] * len(alterations)
+                alts[cat] = [0] * len(alterations)
 
         # OPTIMIZATION: Use numpy for faster array operations
         X_ref = np.array([refs[cat] for cat in cat_list]).T
@@ -404,9 +286,7 @@ def predict_batch_fast(model, dataloader, batch_size=512, progress=True,
         print(f"  Variants/sec: {total_variants/elapsed:.1f}")
         if use_cache and global_cache is not None:
             cache_sizes = {cat: len(cache) for cat, cache in global_cache.items()}
-            print(f"  Cached predictions: {cache_sizes}")
-            if encoding_cache is not None:
-                print(f"  Cached encodings: {len(encoding_cache)} unique sequences")
+            print(f"  Cached sequences: {cache_sizes}")
 
 def predict_table_fast(model,
                       dataloader,
