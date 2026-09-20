@@ -36,7 +36,7 @@ rule decompress:
     input:
         "{file}.vcf.gz",
     output:
-        temp("{file}.vcf"),
+        temp("{file}.raw.vcf"),
     log:
         "{file}.decompress.log",
     resources:
@@ -52,7 +52,7 @@ rule prepare:
     conda:
         "envs/environment_minimal.yml"
     input:
-        "{file}.vcf",
+        "{file}.raw.vcf",
     output:
         temp("{file}.prepared.vcf"),
     log:
