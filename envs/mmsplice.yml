@@ -24,7 +24,7 @@ dependencies:
   # Bioinformatics packages
   - htslib
   - pysam
-  - cyvcf2
+  - cyvcf2<=0.30.15  # mmsplice pins cyvcf2<=0.30.15; keep conda's build in range so pip won't rebuild it
   - pybedtools
 
   # HDF5 for model weights
