@@ -217,6 +217,7 @@ then
             --use-conda --conda-prefix $CADD/envs/conda \
             $SIGNULARITYARGS \
             --executor slurm \
+            --mode default \
             --jobs $MAX_JOBS \
             --configfile $CONFIG \
             --snakefile $SNAKEFILE $VERBOSE \
