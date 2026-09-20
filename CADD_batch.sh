@@ -1,6 +1,6 @@
 #!/bin/bash
 
-usage="$(basename "$0") [-o <outfile>] [-g <genomebuild>] [-v <caddversion>] [-a] <infile>  -- CADD version 1.7 with SLURM batch processing (Snakemake 7 Compatible)
+usage="$(basename "$0") [-o <outfile>] [-g <genomebuild>] [-v <caddversion>] [-a] <infile>  -- CADD version 1.7 with SLURM batch processing
 
 where:
     -h  show this help text
@@ -171,14 +171,12 @@ TMP_OUTFILE=$TMP_FOLDER/$NAME.tsv.gz
 
 cp $INFILE $TMP_INFILE
 
-# setup bindings of singularity args
-# MODIFIED FOR SNAKEMAKE 7: Uses --use-singularity syntax instead of --sdm/apptainer
+# setup bindings of apptainer args
 if [ "$CONDAONLY" = 'true' ]
 then
     SIGNULARITYARGS=""
 else
-    # Note: Snakemake 7 uses --singularity-prefix and --singularity-args
-    SIGNULARITYARGS="--use-singularity --singularity-prefix $CADD/envs/apptainer --singularity-args \"--bind ${TMP_FOLDER} ${SIGNULARITYARGS}\""
+    SIGNULARITYARGS="--use-apptainer --apptainer-prefix $CADD/envs/apptainer --apptainer-args \"--bind ${TMP_FOLDER} ${SIGNULARITYARGS}\""
 fi
 
 # Select Snakefile based on batch mode
@@ -190,30 +188,58 @@ else
     SNAKEFILE=$CADD/Snakefile
 fi
 
-# Define the simplified CLUSTER_COMMAND.
-# Snakemake now substitutes the values defined in cluster_config.yaml.
-CLUSTER_COMMAND="sbatch -A {resources.A} -p {resources.p} --cpus-per-task={threads} --time={resources.time} --mem={resources.mem}M --parsable"
+# Detect major Snakemake version to keep compatibility with legacy mode.
+SNAKEMAKE_VERSION=$(snakemake --version 2>/dev/null || echo "0")
+SNAKEMAKE_MAJOR=$(echo "$SNAKEMAKE_VERSION" | cut -d. -f1)
+if ! [[ "$SNAKEMAKE_MAJOR" =~ ^[0-9]+$ ]]; then
+    SNAKEMAKE_MAJOR=0
+fi
+
+# Legacy Snakemake 7 cluster submission command.
+CLUSTER_COMMAND="sbatch -A {resources.slurm_account} -p {resources.slurm_partition} --cpus-per-task={threads} --time={resources.runtime} --mem={resources.mem_mb}M --parsable"
 
 if [ "$USE_SLURM" = true ]
 then
-    echo "Using SLURM for job submission (Snakemake 7 Legacy Mode with --cluster-config)"
+    if [ "$SNAKEMAKE_MAJOR" -ge 8 ]
+    then
+        echo "Using SLURM for job submission (Snakemake >=8 executor mode)"
+    else
+        echo "Using SLURM for job submission (Snakemake 7 Legacy Mode with --cluster-config)"
+    fi
     echo "  Account: $SLURM_ACCOUNT"
     echo "  Partition: $SLURM_PARTITION"
     echo "  Max jobs: $MAX_JOBS"
 
-    # Common Snakemake command options
-    SNAKE_COMMON_ARGS="$TMP_OUTFILE \
-        --use-conda --conda-prefix $CADD/envs/conda \
-        $SIGNULARITYARGS \
-        --cluster-config cluster_config.yaml \
-        --cluster \"$CLUSTER_COMMAND\" \
-        --jobs $MAX_JOBS \
-        --configfile $CONFIG \
-        --snakefile $SNAKEFILE $VERBOSE \
-        --config SLURM_ACCOUNT=$SLURM_ACCOUNT SLURM_PARTITION=$SLURM_PARTITION \
-        --latency-wait 60 \
-        --retries 3 \
-        --rerun-incomplete"
+    if [ "$SNAKEMAKE_MAJOR" -ge 8 ]
+    then
+        # Snakemake 8/9 switched from --cluster/--cluster-config to executor plugins.
+        SNAKE_COMMON_ARGS="$TMP_OUTFILE \
+            --use-conda --conda-prefix $CADD/envs/conda \
+            $SIGNULARITYARGS \
+            --executor slurm \
+            --jobs $MAX_JOBS \
+            --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE \
+            --default-resources slurm_account=$SLURM_ACCOUNT slurm_partition=$SLURM_PARTITION \
+            --config SLURM_ACCOUNT=$SLURM_ACCOUNT SLURM_PARTITION=$SLURM_PARTITION \
+            --latency-wait 60 \
+            --retries 3 \
+            --rerun-incomplete"
+    else
+        # Snakemake 7 and earlier.
+        SNAKE_COMMON_ARGS="$TMP_OUTFILE \
+            --use-conda --conda-prefix $CADD/envs/conda \
+            $SIGNULARITYARGS \
+            --cluster-config cluster_config.yaml \
+            --cluster \"$CLUSTER_COMMAND\" \
+            --jobs $MAX_JOBS \
+            --configfile $CONFIG \
+            --snakefile $SNAKEFILE $VERBOSE \
+            --config SLURM_ACCOUNT=$SLURM_ACCOUNT SLURM_PARTITION=$SLURM_PARTITION \
+            --latency-wait 60 \
+            --retries 3 \
+            --rerun-incomplete"
+    fi
 
     if [ "$BATCH_MODE" = true ]
     then

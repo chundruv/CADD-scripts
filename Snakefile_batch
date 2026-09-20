@@ -40,10 +40,10 @@ rule decompress:
     log:
         "{file}.decompress.log",
     resources:
-        mem=2000,
-        time=30,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=2000,
+        runtime=30,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         "zcat {input} > {output} 2> {log}"
 
@@ -60,10 +60,10 @@ rule prepare:
     params:
         cadd=os.environ["CADD"],
     resources:
-        mem=4000,
-        time=60,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=4000,
+        runtime=60,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         "cat {input} | "
         "python {params.cadd}/src/scripts/VCF2vepVCF.py | "
@@ -85,10 +85,10 @@ checkpoint prescore:
     params:
         cadd=os.environ["CADD"],
     resources:
-        mem=8000,
-        time=120,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=8000,
+        runtime=120,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         """
         echo '## Prescored variant file' > {output.prescored} 2> {log}
@@ -125,10 +125,10 @@ checkpoint split_batches:
         cadd=os.environ["CADD"],
         batch_size=BATCH_SIZE,
     resources:
-        mem=4000,
-        time=30,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=4000,
+        runtime=30,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         "mkdir -p {output.batch_dir} && "
         "python {params.cadd}/src/scripts/split_vcf.py "
@@ -152,10 +152,10 @@ rule annotation_vep_batch:
         genome_build=config["GenomeBuild"],
         ensembl_db=config["EnsemblDB"],
     resources:
-        mem=8000,
-        time=180,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "pq"),
+        mem_mb=8000,
+        runtime=180,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "pq"),
     shell:
         "cat {input.vcf} | "
         "vep --quiet --cache --offline --dir {input.veppath} "
@@ -189,10 +189,10 @@ rule annotate_esm_batch:
         models=" ".join(["--model {}".format(m) for m in config["ESMmodels"]]),
         batch_size=config["ESMbatchsize"],
     resources:
-        mem=16000,
-        time=360,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=16000,
+        runtime=360,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         """
         # Enable GPU for PyTorch (ESM)
@@ -242,10 +242,10 @@ rule annotate_regseq_batch:
     params:
         cadd=os.environ["CADD"],
     resources:
-        mem=8000,
-        time=180,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=8000,
+        runtime=180,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         "python {params.cadd}/src/scripts/lib/tools/regulatorySequence/predictVariants.py "
         "--variants {input.vcf} --model {input.model} --weights {input.weights} "
@@ -271,10 +271,10 @@ if config["GenomeBuild"] == "GRCh38":
         params:
             cadd=os.environ["CADD"],
         resources:
-            mem=12000,
-            time=240,
-            A=config.get("SLURM_ACCOUNT", ""),
-            p=config.get("SLURM_PARTITION", "normal"),
+            mem_mb=12000,
+            runtime=240,
+            slurm_account=config.get("SLURM_ACCOUNT", ""),
+            slurm_partition=config.get("SLURM_PARTITION", "normal"),
         shell:
             """
             export CUDA_VISIBLE_DEVICES=0
@@ -307,10 +307,10 @@ rule annotation_batch:
     params:
         cadd=os.environ["CADD"],
     resources:
-        mem=4000,
-        time=60,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=4000,
+        runtime=60,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         "zcat {input.vcf} | "
         "python {params.cadd}/src/scripts/annotateVEPvcf.py -c {input.reference_cfg} | "
@@ -330,10 +330,10 @@ rule imputation_batch:
     params:
         cadd=os.environ["CADD"],
     resources:
-        mem=4000,
-        time=60,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=4000,
+        runtime=60,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         "zcat {input.tsv} | "
         "python {params.cadd}/src/scripts/trackTransformation.py -b "
@@ -357,10 +357,10 @@ rule score_batch:
         use_anno=config["Annotation"],
         columns=config["Columns"],
     resources:
-        mem=8000,
-        time=120,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=8000,
+        runtime=120,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         """
         python {params.cadd}/src/scripts/predictSKmodel.py \
@@ -407,10 +407,10 @@ rule merge_batches:
     params:
         cadd=os.environ["CADD"],
     resources:
-        mem=8000,
-        time=60,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=8000,
+        runtime=60,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         "cat {input} > {output} 2> {log}"
 
@@ -437,10 +437,10 @@ rule join:
     params:
         header=config["Header"],
     resources:
-        mem=4000,
-        time=60,
-        A=config.get("SLURM_ACCOUNT", ""),
-        p=config.get("SLURM_PARTITION", "normal"),
+        mem_mb=4000,
+        runtime=60,
+        slurm_account=config.get("SLURM_ACCOUNT", ""),
+        slurm_partition=config.get("SLURM_PARTITION", "normal"),
     shell:
         """
         (
