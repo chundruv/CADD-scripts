@@ -19,7 +19,8 @@ dependencies:
 
   # TensorFlow 2.x with GPU support (auto-detects CUDA)
   # For CPU-only: use tensorflow-cpu instead
-  - tensorflow>=2.10
+  # Pinned exact so pip (via mmsplice's unpinned tensorflow dep) doesn't backtrack across releases
+  - tensorflow=2.11.0
 
   # Bioinformatics packages
   - htslib
@@ -36,8 +37,11 @@ dependencies:
 
   # Python packages via pip
   - pip:
-      # Core MMSplice and dependencies
-      - mmsplice>=2.0  # Updated version for TF2 compatibility
+      # Pinned exactly: prevents pip's resolver from backtracking through ancient
+      # mmsplice/tensorflow/scikit-learn releases that fail to build on modern Python
+      - mmsplice==2.4.0
+      - tensorflow==2.11.0
+      - scikit-learn>=1.0
       - concise>=0.6.9  # For sequence encoding
 
       # VCF and sequence handling
