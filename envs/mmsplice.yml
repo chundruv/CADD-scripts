@@ -42,7 +42,9 @@ dependencies:
       - mmsplice==2.4.0
       - tensorflow==2.11.0
       - scikit-learn>=1.0
-      - concise>=0.6.9  # For sequence encoding
+      # concise removed: not a real mmsplice dependency, and its keras<=2.2.4 pin
+      # conflicts with tensorflow's own keras requirement. MMSplice.py already
+      # has a native encodeDNA() replacement, so concise is not needed.
 
       # VCF and sequence handling
       - pyfaidx
