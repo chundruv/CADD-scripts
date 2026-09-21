@@ -22,6 +22,12 @@ import sys
 import gzip
 import time
 import os
+import functools
+
+# Diagnostic/progress output must never touch stdout: the VCF stream (header +
+# records) is written to stdout when no -o/--output is given, and this script
+# is piped directly into bgzip by the Snakemake rule.
+print = functools.partial(print, file=sys.stderr)
 
 
 # Native DNA encoding function (replaces concise.preprocessing.encodeDNA)
